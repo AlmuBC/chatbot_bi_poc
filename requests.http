@@ -1,0 +1,117 @@
+### Variables
+@baseUrl = https://c0gl2kb2-8080.uks1.devtunnels.ms
+@localUrl = http://localhost:8080
+
+### Health check (GET /)
+GET {{baseUrl}}/
+
+### Health check (local)
+GET {{localUrl}}/
+
+### Webhook Google Chat - ADDED_TO_SPACE
+POST {{baseUrl}}/googlechat
+Content-Type: application/json
+
+{
+  "type": "ADDED_TO_SPACE",
+  "space": {
+    "name": "spaces/AAAA1111",
+    "type": "ROOM"
+  }
+}
+
+### Webhook Google Chat - REMOVED_FROM_SPACE
+POST {{baseUrl}}/googlechat
+Content-Type: application/json
+
+{
+  "type": "REMOVED_FROM_SPACE",
+  "space": {
+    "name": "spaces/AAAA1111",
+    "type": "ROOM"
+  }
+}
+
+### Webhook Google Chat - MESSAGE (pregunta con datos)
+POST {{baseUrl}}/googlechat
+Content-Type: application/json
+
+{
+  "type": "MESSAGE",
+  "message": {
+    "text": "@Chatbot BI ¿Cuál ha sido el ROAS de las campañas de Search (SEM)?",
+    "argumentText": " ¿Cuál ha sido el ROAS de las campañas de Search (SEM)?"
+  },
+  "space": {
+    "name": "spaces/AAAA1111",
+    "type": "ROOM"
+  },
+  "user": {
+    "displayName": "Usuario de Prueba",
+    "email": "usuario.prueba@example.com"
+  }
+}
+
+### Webhook Google Chat - MESSAGE (pregunta ambigua, debe pedir aclaración)
+POST {{baseUrl}}/googlechat
+Content-Type: application/json
+
+{
+  "type": "MESSAGE",
+  "message": {
+    "text": "@Chatbot BI ¿cuánto hemos invertido?",
+    "argumentText": " ¿cuánto hemos invertido?"
+  },
+  "space": {
+    "name": "spaces/AAAA1111",
+    "type": "ROOM"
+  },
+  "user": {
+    "displayName": "Usuario de Prueba",
+    "email": "usuario.prueba@example.com"
+  }
+}
+
+### Webhook Google Chat - MESSAGE (pregunta con PII, debe rehusar o agregar)
+POST {{baseUrl}}/googlechat
+Content-Type: application/json
+
+{
+  "type": "MESSAGE",
+  "message": {
+    "text": "@Chatbot BI ¿quién es el responsable de la campaña con más inversión?",
+    "argumentText": " ¿quién es el responsable de la campaña con más inversión?"
+  },
+  "space": {
+    "name": "spaces/AAAA1111",
+    "type": "ROOM"
+  },
+  "user": {
+    "displayName": "Usuario de Prueba",
+    "email": "usuario.prueba@example.com"
+  }
+}
+
+### Webhook Google Chat - MESSAGE (sin texto, debe avisar)
+POST {{baseUrl}}/googlechat
+Content-Type: application/json
+
+{
+  "type": "MESSAGE",
+  "message": {
+    "text": "",
+    "argumentText": ""
+  },
+  "space": {
+    "name": "spaces/AAAA1111",
+    "type": "ROOM"
+  }
+}
+
+### Webhook Google Chat - evento no manejado (debe devolver 200 vacío)
+POST {{baseUrl}}/googlechat
+Content-Type: application/json
+
+{
+  "type": "CARD_CLICKED"
+}

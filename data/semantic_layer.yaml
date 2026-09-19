@@ -1,0 +1,61 @@
+tables:
+  - name: Datos_Campañas_1000
+    description: "Tabla principal con 1,000 registros de rendimiento de campañas de medios digitales, canales y datos de responsables."
+    
+    columns:
+      - name: ID_Campana
+        description: "Identificador único de la campaña."
+        synonyms: ["id", "codigo", "campaña"]
+
+      - name: Responsable
+        description: "Nombre y correo corporativo del gestor de la campaña (Dato PII a enmascarar)."
+        synonyms: ["gestor", "responsable", "cuenta", "email", "persona a cargo"]
+        pii_sensitive: true
+
+      - name: Fecha_Inicio
+        description: "Fecha de inicio de la campaña en formato AAAA-MM-DD."
+        synonyms: ["fecha", "mes", "periodo", "inicio", "dia"]
+
+      - name: Cliente_Sector
+        description: "Sector industrial o de negocio del cliente (ej. Retail_Moda, Banca_Seguros, etc.)."
+        synonyms: ["sector", "industria", "cliente", verticals]
+
+      - name: Canal
+        description: "El medio o canal digital utilizado para la captación (ej. Search (SEM), Social Ads, Programmatic, SEO, etc.)."
+        synonyms: ["medio", "fuente", "source", "red", "plataforma"]
+      
+      - name: Inversion_EUR
+        description: "El coste o presupuesto total consumido de la campaña en euros."
+        synonyms: ["gasto", "spend", "coste", "presupuesto consumido", "pasta"]
+        
+      - name: Impresiones
+        description: "Número total de impresiones o visualizaciones del anuncio."
+        synonyms: ["impactos", "visualizaciones", "exposure"]
+
+      - name: Clics
+        description: "Número total de clics obtenidos en los anuncios."
+        synonyms: ["clicks", "interacciones"]
+
+      - name: Conversiones
+        description: "Acciones valiosas completadas por los usuarios (compras o leads)."
+        synonyms: ["ventas", "leads", "registros", "adquisiciones", "objetivos"]
+        
+      - name: Ingresos_EUR
+        description: "El valor monetario directo generado por las conversiones en euros."
+        synonyms: ["revenue", "facturación", "ventas en euros", "retorno directo"]
+
+    calculated_metrics:
+      - name: CTR (Click-Through Rate)
+        description: "Porcentaje de clics respecto a las impresiones."
+        formula: "(Clics / Impresiones) * 100"
+        synonyms: ["ratio de clic", "engagement"]
+        
+      - name: CPA (Coste por Adquisición)
+        description: "Coste medio necesario para conseguir cada conversión."
+        formula: "Inversion_EUR / Conversiones"
+        synonyms: ["CPL", "coste por lead"]
+        
+      - name: ROAS (Return On Ad Spend)
+        description: "Retorno de la inversión publicitaria generado."
+        formula: "Ingresos_EUR / Inversion_EUR"
+        synonyms: ["retorno", "rentabilidad"]

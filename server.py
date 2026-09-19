@@ -1,0 +1,165 @@
+"""
+PoC - Paso 1 (versión Google Chat): servidor webhook que recibe los mensajes
+enviados a la Chat App "Chatbot BI" y responde usando el mismo motor que ya
+probamos en terminal (chatbot.py): capa semántica -> LLM (OpenCode) genera
+código pandas -> se ejecuta de verdad en sandbox -> se devuelve el resultado.
+
+Ejecución:
+    python server.py
+Y en otra terminal, para exponerlo a internet:
+    cloudflared tunnel --url http://localhost:8080
+"""
+import logging
+from flask import Flask, request, jsonify
+
+import config
+from semantic_layer import load_semantic_layer, render_semantic_prompt, get_dataframe_variable_map
+from data_engine import load_tables, describe_schema
+from llm_client import build_system_prompt, ask_llm_for_code
+from sandbox import run_generated_code, UnsafeCodeError
+from chatbot import format_result_for_display  # reutilizamos el mismo formateador que en el CLI
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("chatbot_googlechat")
+
+app = Flask(__name__)
+
+# --- Carga única al arrancar el servidor (igual que en chatbot.py) ---
+_semantic = load_semantic_layer(config.SEMANTIC_LAYER_PATH)
+_table_names = list(get_dataframe_variable_map(_semantic).keys())
+_dataframes = load_tables(config.EXCEL_PATH, _table_names)
+_schema_block = describe_schema(next(iter(_dataframes.values())))
+_semantic_block = render_semantic_prompt(_semantic)
+_system_prompt = build_system_prompt(_semantic_block, _schema_block)
+
+log.info("Datos cargados: %d filas, tabla(s): %s", len(next(iter(_dataframes.values()))), _table_names)
+
+
+def verify_google_request(req) -> bool:
+    """Verifica que la petición viene realmente de Google Chat (JWT firmado por Google).
+    Se puede desactivar con GOOGLE_CHAT_VERIFY_REQUESTS=false mientras se depura,
+    pero en cuanto todo funcione conviene dejarlo activado."""
+    if not config.GOOGLE_CHAT_VERIFY_REQUESTS:
+        return True
+
+    auth_header = req.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        log.warning("Petición rechazada: falta cabecera Authorization Bearer")
+        return False
+    token = auth_header.split(" ", 1)[1]
+
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport import requests as google_requests
+
+        claims = id_token.verify_oauth2_token(
+            token, google_requests.Request(), audience=config.GOOGLE_CHAT_WEBHOOK_URL
+        )
+        if claims.get("iss") not in ("https://accounts.google.com", "accounts.google.com"):
+            log.warning("Petición rechazada: emisor del token inesperado (%s)", claims.get("iss"))
+            return False
+        # Con las "funciones interactivas" habilitadas (Workspace Add-on), Google firma
+        # el token con esta cuenta de servicio en vez de chat@system.gserviceaccount.com.
+        # Esa forma de email es la MISMA para cualquier Workspace Add-on de cualquier
+        # desarrollador (solo cambia el número de proyecto), así que no basta con
+        # comprobar que contiene "gcp-sa-gsuiteaddons": hay que exigir coincidencia
+        # exacta con nuestro propio GOOGLE_CHAT_PROJECT_NUMBER.
+        expected_email = f"service-{config.GOOGLE_CHAT_PROJECT_NUMBER}@gcp-sa-gsuiteaddons.iam.gserviceaccount.com"
+        if claims.get("email") != expected_email:
+            log.warning("Petición rechazada: email del token inesperado (%s)", claims.get("email"))
+            return False
+        return True
+    except Exception as e:
+        log.warning("Petición rechazada: token inválido (%s)", e)
+        return False
+
+
+def answer_question(question: str) -> str:
+    """Ejecuta el mismo flujo que chatbot.py (CLI) pero devuelve el texto ya formateado,
+    listo para meter en la respuesta JSON de Google Chat."""
+    try:
+        decision = ask_llm_for_code(_system_prompt, question)
+    except Exception as e:
+        return f"⚠️ Error consultando al modelo: {e}"
+
+    action = decision.get("action")
+
+    if action == "ask_clarification":
+        return decision.get("clarification_question", "Necesito más detalle para responder.")
+
+    if action == "refuse":
+        return f"No puedo darte ese dato en bruto. {decision.get('explanation', '')}"
+
+    if action == "execute_code":
+        code = decision.get("code", "")
+        try:
+            result = run_generated_code(code, _dataframes)
+        except UnsafeCodeError as e:
+            return f"⚠️ Código bloqueado por el sandbox: {e}"
+        except Exception as e:
+            return f"⚠️ El código generado falló al ejecutarse: {e}"
+
+        explicacion = decision.get("explanation", "")
+        valor = format_result_for_display(result)
+        # Formato Markdown-like que Google Chat sí soporta (negrita con *asteriscos*,
+        # bloque de código con comillas triples), para que se pueda verificar que la
+        # respuesta viene de código ejecutado y no de lenguaje libre.
+        return (
+            f"{explicacion}\n\n"
+            f"*Resultado (calculado por código, no por el LLM):* {valor}\n\n"
+            f"```\n{code.strip()}\n```"
+        )
+
+    return f"⚠️ Respuesta inesperada del modelo: {decision}"
+
+
+def chat_text_response(text: str) -> dict:
+    """Envuelve un texto en la estructura de respuesta que espera un
+    Workspace Add-on de Chat (hostAppDataAction/chatDataAction/createMessageAction)."""
+    return {
+        "hostAppDataAction": {
+            "chatDataAction": {
+                "createMessageAction": {
+                    "message": {"text": text}
+                }
+            }
+        }
+    }
+
+
+@app.route("/googlechat", methods=["POST"])
+def googlechat_webhook():
+    if not verify_google_request(request):
+        return jsonify({"error": "unauthorized"}), 401
+
+    event = request.get_json(silent=True) or {}
+    chat = event.get("chat", {})
+
+    if "addedToSpacePayload" in chat:
+        return jsonify(chat_text_response("¡Hola! Soy Chatbot BI. Pregúntame lo que quieras sobre las campañas de marketing (ROAS, CPA, inversión, etc.)."))
+
+    if "removedFromSpacePayload" in chat:
+        return "", 200
+
+    if "messagePayload" in chat:
+        message = chat["messagePayload"].get("message", {})
+        # argumentText viene sin la @mención al bot; si no está, usamos text tal cual.
+        question = (message.get("argumentText") or message.get("text") or "").strip()
+        if not question:
+            return jsonify(chat_text_response("No he recibido ningún texto en tu mensaje."))
+
+        log.info("Pregunta recibida: %s", question)
+        answer = answer_question(question)
+        return jsonify(chat_text_response(answer))
+
+    # Cualquier otro tipo de evento: respondemos 200 vacío para que Google no reintente.
+    return "", 200
+
+
+@app.route("/", methods=["GET"])
+def health():
+    return "Chatbot BI webhook activo.", 200
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=config.PORT)
