@@ -4,6 +4,47 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Este proyecto es una PoC; las versiones se corresponden con los pasos del
 proyecto original, no con semver estricto.
 
+## [0.2.0] — Paso 2: Logging de trazabilidad — 2026-09-19
+
+### Añadido
+- `logger.py`: función `log_interaction()` que registra cada interacción (pregunta,
+  decisión del LLM, código generado, resultado/error de ejecución, respuesta final,
+  estado y latencia) como una línea JSON en `logs/interactions.jsonl` (JSONL,
+  `ensure_ascii=False`). Escritura protegida con un lock a nivel de módulo para
+  evitar líneas intercaladas si Flask corre en modo threaded. Es *best-effort*:
+  nunca lanza una excepción hacia arriba; si falla la escritura, se informa por
+  stderr sin afectar a la respuesta al usuario.
+- `server.py`: `answer_question()` ahora mide la latencia total de la interacción,
+  captura `execution_error` con el traceback real cuando el sandbox falla, y llama a
+  `log_interaction()` al final de cada camino (éxito, aclaración, rehúso, error),
+  con una defensa adicional (`_safe_log_interaction`) en el propio punto de llamada.
+  Se extraen `user_email`, `space_id` y `thread_id` del payload de Google Chat
+  (`message.sender.email`, `messagePayload.space.name`, `message.thread.name`) para
+  incluirlos en el log.
+- `test_error_path.py`: script para verificar de forma aislada el camino de error
+  completo (sandbox → orquestación → log), forzando un código pandas que referencia
+  una columna inexistente, sin depender de que el LLM real genere código inválido.
+- `logs/` añadido a `.gitignore` (contenido generado en runtime, no versionado).
+
+### Cambiado
+- **Comportamiento visible para el usuario**: si el código generado falla al
+  ejecutarse en el sandbox, ahora se responde siempre con un mensaje genérico
+  ("No he podido calcular la respuesta a tu pregunta. ¿Puedes reformularla o
+  intentarlo de nuevo?"), en vez del mensaje anterior que podía filtrar el error
+  crudo del sandbox o del intérprete. El detalle técnico real (traceback completo)
+  se conserva únicamente en `execution_error` dentro del log.
+- Eliminado el manejo diferenciado de `UnsafeCodeError` en `server.py`: ahora
+  cualquier excepción del sandbox (código bloqueado o fallo en ejecución) se trata
+  de forma unificada — mismo mensaje genérico al usuario, detalle solo en el log.
+
+### Pendiente (deuda técnica conocida, no bloqueante)
+- Aún no verificado contra un payload real de Google Chat si `sender.email`,
+  `space.name` y `thread.name` llegan tal cual se asume (basado en la documentación
+  de la API de Chat, no en tráfico capturado en esta sesión).
+- Sin rotación ni límite de tamaño de `logs/interactions.jsonl` (crece indefinidamente).
+- `test_error_path.py` queda pendiente de decidir si se conserva como test de
+  regresión permanente o se elimina.
+
 ## [0.1.0] — Paso 1: Chatbot conversacional funcionando de punta a punta — 2026-09-19
 
 ### Añadido

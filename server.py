@@ -10,14 +10,17 @@ Y en otra terminal, para exponerlo a internet:
     cloudflared tunnel --url http://localhost:8080
 """
 import logging
+import time
+import traceback
 from flask import Flask, request, jsonify
 
 import config
 from semantic_layer import load_semantic_layer, render_semantic_prompt, get_dataframe_variable_map
 from data_engine import load_tables, describe_schema
 from llm_client import build_system_prompt, ask_llm_for_code
-from sandbox import run_generated_code, UnsafeCodeError
+from sandbox import run_generated_code
 from chatbot import format_result_for_display  # reutilizamos el mismo formateador que en el CLI
+from logger import log_interaction
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("chatbot_googlechat")
@@ -74,43 +77,80 @@ def verify_google_request(req) -> bool:
         return False
 
 
-def answer_question(question: str) -> str:
+def _safe_log_interaction(**kwargs) -> None:
+    """Defensa adicional en el punto de llamada: aunque logger.py ya no debería
+    lanzar, si algo inesperado ocurre aquí no debe afectar a la respuesta ya calculada."""
+    try:
+        log_interaction(**kwargs)
+    except Exception as e:
+        log.error("No se pudo registrar la interacción en el log: %s", e)
+
+
+def answer_question(question: str, user_email: str | None = None, space_id: str | None = None, thread_id: str | None = None) -> str:
     """Ejecuta el mismo flujo que chatbot.py (CLI) pero devuelve el texto ya formateado,
-    listo para meter en la respuesta JSON de Google Chat."""
+    listo para meter en la respuesta JSON de Google Chat. Registra cada interacción
+    (pregunta, código generado, resultado/error y latencia) vía logger.py."""
+    start = time.monotonic()
+    generated_code = None
+    execution_result = None
+    execution_error = None
+
     try:
         decision = ask_llm_for_code(_system_prompt, question)
     except Exception as e:
-        return f"⚠️ Error consultando al modelo: {e}"
-
-    action = decision.get("action")
-
-    if action == "ask_clarification":
-        return decision.get("clarification_question", "Necesito más detalle para responder.")
-
-    if action == "refuse":
-        return f"No puedo darte ese dato en bruto. {decision.get('explanation', '')}"
-
-    if action == "execute_code":
-        code = decision.get("code", "")
-        try:
-            result = run_generated_code(code, _dataframes)
-        except UnsafeCodeError as e:
-            return f"⚠️ Código bloqueado por el sandbox: {e}"
-        except Exception as e:
-            return f"⚠️ El código generado falló al ejecutarse: {e}"
-
-        explicacion = decision.get("explanation", "")
-        valor = format_result_for_display(result)
-        # Formato Markdown-like que Google Chat sí soporta (negrita con *asteriscos*,
-        # bloque de código con comillas triples), para que se pueda verificar que la
-        # respuesta viene de código ejecutado y no de lenguaje libre.
-        return (
-            f"{explicacion}\n\n"
-            f"*Resultado (calculado por código, no por el LLM):* {valor}\n\n"
-            f"```\n{code.strip()}\n```"
+        final_response = f"⚠️ Error consultando al modelo: {e}"
+        _safe_log_interaction(
+            user_email=user_email, question=question, llm_action="error",
+            generated_code=None, execution_result=None, execution_error=str(e),
+            final_response=final_response, status="error",
+            latency_ms=int((time.monotonic() - start) * 1000),
+            space_id=space_id, thread_id=thread_id,
         )
+        return final_response
 
-    return f"⚠️ Respuesta inesperada del modelo: {decision}"
+    llm_action = decision.get("action")
+
+    if llm_action == "ask_clarification":
+        final_response = decision.get("clarification_question", "Necesito más detalle para responder.")
+        status = "clarification"
+
+    elif llm_action == "refuse":
+        final_response = f"No puedo darte ese dato en bruto. {decision.get('explanation', '')}"
+        status = "refused"
+
+    elif llm_action == "execute_code":
+        generated_code = decision.get("code", "")
+        try:
+            result = run_generated_code(generated_code, _dataframes)
+            execution_result = format_result_for_display(result)
+            status = "success"
+            explicacion = decision.get("explanation", "")
+            # Formato Markdown-like que Google Chat sí soporta (negrita con *asteriscos*,
+            # bloque de código con comillas triples), para que se pueda verificar que la
+            # respuesta viene de código ejecutado y no de lenguaje libre.
+            final_response = (
+                f"{explicacion}\n\n"
+                f"*Resultado (calculado por código, no por el LLM):* {execution_result}\n\n"
+                f"```\n{generated_code.strip()}\n```"
+            )
+        except Exception:
+            execution_error = traceback.format_exc()
+            status = "error"
+            # Mensaje genérico al usuario: nunca el traceback interno del sandbox.
+            final_response = "No he podido calcular la respuesta a tu pregunta. ¿Puedes reformularla o intentarlo de nuevo?"
+
+    else:
+        final_response = f"⚠️ Respuesta inesperada del modelo: {decision}"
+        status = "error"
+
+    _safe_log_interaction(
+        user_email=user_email, question=question, llm_action=llm_action,
+        generated_code=generated_code, execution_result=execution_result,
+        execution_error=execution_error, final_response=final_response, status=status,
+        latency_ms=int((time.monotonic() - start) * 1000),
+        space_id=space_id, thread_id=thread_id,
+    )
+    return final_response
 
 
 def chat_text_response(text: str) -> dict:
@@ -142,14 +182,23 @@ def googlechat_webhook():
         return "", 200
 
     if "messagePayload" in chat:
-        message = chat["messagePayload"].get("message", {})
+        message_payload = chat["messagePayload"]
+        message = message_payload.get("message", {})
         # argumentText viene sin la @mención al bot; si no está, usamos text tal cual.
         question = (message.get("argumentText") or message.get("text") or "").strip()
         if not question:
             return jsonify(chat_text_response("No he recibido ningún texto en tu mensaje."))
 
+        # Estructura según la documentación de la API de Chat (Message.sender.email,
+        # Space.name, Message.thread.name); no verificada contra un payload real
+        # capturado en esta sesión, así que si Google no manda alguna de estas claves
+        # tal cual, quedan en None sin romper el flujo.
+        user_email = message.get("sender", {}).get("email")
+        space_id = message_payload.get("space", {}).get("name")
+        thread_id = message.get("thread", {}).get("name")
+
         log.info("Pregunta recibida: %s", question)
-        answer = answer_question(question)
+        answer = answer_question(question, user_email=user_email, space_id=space_id, thread_id=thread_id)
         return jsonify(chat_text_response(answer))
 
     # Cualquier otro tipo de evento: respondemos 200 vacío para que Google no reintente.

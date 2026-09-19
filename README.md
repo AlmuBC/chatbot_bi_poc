@@ -65,7 +65,10 @@ Preguntas de ejemplo:
 
 Para probar solo la conexión con OpenCode (sin cargar nada de Google Chat), usa
 `test_opencode.py`. Para probar los endpoints del servidor sin pasar por Google Chat
-(health check y los distintos tipos de evento del webhook), usa `requests.http`.
+(health check y los distintos tipos de evento del webhook), usa `requests.http`. Para
+verificar el camino de error de la orquestación (sandbox fallando + mensaje genérico
+al usuario + log con el detalle real) sin depender de que el LLM genere código malo,
+usa `test_error_path.py`.
 
 ## 4. Ejecutar como Chat App de Google Chat
 
@@ -115,7 +118,19 @@ Debería imprimir `Datos cargados: 1000 filas...` y quedarse escuchando en el pu
 Escríbele a "Chatbot BI" en Google Chat. Debería responder con el código pandas
 ejecutado y el resultado real calculado sobre los 1,000 registros.
 
-## 5. Notas técnicas descubiertas durante la implementación
+## 5. Logging de trazabilidad
+
+Cada interacción (pregunta, decisión del LLM, código generado, resultado o error de
+ejecución, respuesta final, estado y latencia) se registra en `logs/interactions.jsonl`
+(una línea JSON por interacción, formato JSONL), vía `logger.py`. El logging es
+*best-effort*: si falla la escritura en disco, se avisa por stderr pero nunca rompe la
+respuesta al usuario. `logs/` está excluido de git (`.gitignore`).
+
+Si el código generado falla en el sandbox, el usuario recibe siempre un mensaje
+genérico ("No he podido calcular la respuesta a tu pregunta...") — el traceback real
+solo queda en `execution_error` dentro del log, nunca se expone en el chat.
+
+## 6. Notas técnicas descubiertas durante la implementación
 
 Estas son particularidades reales con las que nos encontramos (no están en la
 documentación "de libro" de Google/OpenCode, o están dispersas):
@@ -140,9 +155,8 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
 - **El reloj del sistema debe estar sincronizado**: la verificación del JWT falla con
   "Token used too early" si el reloj de Windows está desajustado unos segundos.
 
-## 6. Qué queda para los próximos pasos (no incluido aquí a propósito)
+## 7. Qué queda para los próximos pasos (no incluido aquí a propósito)
 
-- **Paso 2** — Logging: guardar en disco cada pregunta, el código generado y la respuesta.
 - **Paso 3** — Gateway tipo LiteLLM delante de OpenCode, para no llamar directo al proveedor.
 - **Paso 4** — Enmascarado automático de PII con una herramienta tipo Microsoft Presidio
   (hoy el control de PII es solo una regla en el prompt del LLM, no una detección robusta).
@@ -160,13 +174,16 @@ chatbot_bi_poc/
 ├── chatbot.py            # punto de entrada CLI (bucle de chat en terminal)
 ├── server.py              # punto de entrada Google Chat (servidor webhook Flask)
 ├── test_opencode.py        # prueba aislada de la conexión con OpenCode
+├── test_error_path.py      # prueba aislada del camino de error de la orquestación
 ├── requests.http           # peticiones de prueba para los endpoints del servidor
 ├── llm_client.py          # llamada al LLM vía OpenCode (genera código, no texto)
+├── logger.py               # logging de trazabilidad en logs/interactions.jsonl
 ├── semantic_layer.py       # carga y formatea semantic_layer.yaml
 ├── data_engine.py          # carga el Excel a pandas
 ├── sandbox.py              # ejecuta el código generado de forma acotada
 ├── config.py               # variables de entorno
 ├── data/                    # copia del Excel y el YAML de origen
+├── logs/                    # interactions.jsonl (generado en runtime, ignorado por git)
 ├── requirements.txt
 └── .env.example
 ```
