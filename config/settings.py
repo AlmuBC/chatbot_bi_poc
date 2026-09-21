@@ -23,7 +23,22 @@ SEMANTIC_LAYER_PATH = BASE_DIR / os.getenv("SEMANTIC_LAYER_PATH", "data/semantic
 GOOGLE_CHAT_PROJECT_NUMBER = os.getenv("GOOGLE_CHAT_PROJECT_NUMBER", "")
 GOOGLE_CHAT_WEBHOOK_URL = os.getenv("GOOGLE_CHAT_WEBHOOK_URL")
 GOOGLE_CHAT_VERIFY_REQUESTS = os.getenv("GOOGLE_CHAT_VERIFY_REQUESTS", "true").lower() == "true"
+# Cuenta de servicio usada para publicar mensajes en Chat de forma asíncrona
+# (chat.spaces().messages().create, scope chat.bot) una vez responde el LLM.
+# Fuera del repo (ver .gitignore): descárgala en Google Cloud Console y
+# guárdala en esta ruta (o cambia GOOGLE_CHAT_SERVICE_ACCOUNT_FILE en .env).
+GOOGLE_CHAT_SERVICE_ACCOUNT_FILE = BASE_DIR / os.getenv(
+    "GOOGLE_CHAT_SERVICE_ACCOUNT_FILE", "secrets/google-chat-service-account.json"
+)
 PORT = int(os.getenv("PORT", "8080"))
+
+# Cuánto espera el handler /googlechat a que termine el procesamiento en background
+# antes de devolver el placeholder "Dame un momento...". Si el LLM+cálculo responde
+# dentro de este margen, se ahorra una llamada de red a la Chat API devolviendo la
+# respuesta real directamente en el propio request síncrono. Default (20s) deja
+# margen bajo el límite real de 30s de Google Chat para cubrir la latencia de red
+# del propio request, la verificación del JWT y el tiempo de serialización.
+GOOGLE_CHAT_SYNC_WAIT_SECONDS = float(os.getenv("GOOGLE_CHAT_SYNC_WAIT_SECONDS", "20"))
 
 # Secreto usado para pseudonimizar user_email en logs/interactions.jsonl (HMAC-SHA256,
 # ver observability/logger.py). Debe mantenerse fuera del código y no compartirse con el log.

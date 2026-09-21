@@ -41,12 +41,12 @@ def pseudonymize_user_email(user_email: str | None) -> str | None:
 def log_interaction(
     user_email: str,
     question: str,
-    llm_action: str,          # "execute_code" | "ask_clarification" | "refuse"
+    llm_action: str,          # "execute_code" | "ask_clarification" | "refuse" | "off_topic"
     generated_code: str | None,
     execution_result: str | None,
     execution_error: str | None,
     final_response: str,
-    status: str,              # "success" | "error" | "clarification" | "refused"
+    status: str,              # "success" | "error" | "clarification" | "refused" | "off_topic" | "blocked"
     latency_ms: int,
     model: str | None = None,
     semantic_layer_version: str | None = None,

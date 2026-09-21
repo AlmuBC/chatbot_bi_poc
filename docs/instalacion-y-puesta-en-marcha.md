@@ -38,6 +38,7 @@ Rellena en `.env`:
 | `GOOGLE_CHAT_PROJECT_NUMBER` | Número de proyecto de Google Cloud | Pestaña "Configuración" de la Chat API en Cloud Console (arriba del todo) |
 | `GOOGLE_CHAT_WEBHOOK_URL` | URL pública del webhook + `/googlechat` | Ver sección 4 más abajo. Debe coincidir carácter por carácter con lo puesto en Cloud Console |
 | `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` | Ruta a la clave JSON de la cuenta de servicio | Ver sección 3 más abajo |
+| `GOOGLE_CHAT_SYNC_WAIT_SECONDS` | Margen (segundos) antes de devolver el placeholder mientras se calcula la respuesta en background | Por defecto `20`, bajo el límite real de 30s de Google Chat |
 | `LOG_USER_ID_SECRET` | Clave HMAC-SHA256 para pseudonimizar emails en el log | Genera la tuya: `python -c "import secrets; print(secrets.token_hex(32))"` |
 | `CONTEXT_MAX_TURNS` / `CONTEXT_INACTIVITY_MINUTES` | Memoria de conversación de corto plazo | Ver [memoria-y-perfilado.md](memoria-y-perfilado.md). Por defecto `3` turnos / `20` minutos |
 

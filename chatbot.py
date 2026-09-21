@@ -21,6 +21,7 @@ from core.data_engine import load_tables, describe_schema
 from llm import build_system_prompt, ask_llm_for_code
 from core.sandbox import run_generated_code, UnsafeCodeError
 from core.pii import mask_emails, mask_known_pii_names
+from core.guardrails import check_prohibited
 
 BANNER = """
 ==================================================================
@@ -75,6 +76,11 @@ def main():
         question = mask_emails(question)
         question = mask_known_pii_names(question, only_df, pii_columns)
 
+        blocked_reason = check_prohibited(question)
+        if blocked_reason:
+            print("Bot: No puedo ayudarte con eso. Solo respondo preguntas sobre las campañas de marketing con los datos disponibles.\n")
+            continue
+
         try:
             decision = ask_llm_for_code(system_prompt, question)
         except Exception as e:
@@ -91,11 +97,15 @@ def main():
             print(f"Bot: No puedo darte ese dato en bruto. {decision.get('explanation', '')}\n")
             continue
 
+        if action == "off_topic":
+            print(f"Bot: {decision.get('explanation', '')}\n")
+            continue
+
         if action == "execute_code":
             code = decision.get("code", "")
             print(f"[código generado y ejecutado]\n{code}\n")
             try:
-                result = run_generated_code(code, dataframes)
+                result = run_generated_code(code, dataframes, pii_columns=pii_columns)
             except UnsafeCodeError as e:
                 print(f"Bot: ⚠️ Código bloqueado por el sandbox: {e}\n")
                 continue

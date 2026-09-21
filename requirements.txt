@@ -5,6 +5,7 @@ openai>=1.40
 python-dotenv>=1.0
 flask>=3.0
 google-auth>=2.30
+google-api-python-client>=2.140
 requests>=2.31
 
 # Solo necesario si activas LLM_PROVIDER=anthropic (ver llm/anthropic_client.py).

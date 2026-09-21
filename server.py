@@ -11,6 +11,7 @@ Y en otra terminal, para exponerlo a internet:
     cloudflared tunnel --url http://localhost:8080
 """
 import logging
+import threading
 import time
 import traceback
 from flask import Flask, request, jsonify
@@ -208,6 +209,10 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
         final_response = f"No puedo darte ese dato en bruto. {decision.get('explanation', '')}"
         status = "refused"
 
+    elif llm_action == "off_topic":
+        final_response = decision.get("explanation", "")
+        status = "off_topic"
+
     elif llm_action == "execute_code":
         generated_code = decision.get("code", "")
         try:
@@ -258,6 +263,97 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
     return final_response
 
 
+_CHAT_BOT_SCOPES = ["https://www.googleapis.com/auth/chat.bot"]
+_chat_service = None
+_chat_service_lock = threading.Lock()
+
+# Deduplicación de reintentos de entrega de Google Chat: si el mismo evento
+# llega dos veces, no se vuelve a procesar. Un set en memoria basta para este
+# PoC (no persiste entre reinicios ni se comparte entre instancias).
+_processed_event_ids: set[str] = set()
+_processed_event_ids_lock = threading.Lock()
+
+
+def _get_chat_service():
+    """Cliente autenticado de la Chat API (cacheado tras la primera llamada),
+    usado para publicar la respuesta final una vez termina answer_question()."""
+    global _chat_service
+    if _chat_service is None:
+        with _chat_service_lock:
+            if _chat_service is None:
+                from google.oauth2 import service_account
+                from googleapiclient.discovery import build
+
+                creds = service_account.Credentials.from_service_account_file(
+                    str(config.GOOGLE_CHAT_SERVICE_ACCOUNT_FILE), scopes=_CHAT_BOT_SCOPES
+                )
+                _chat_service = build("chat", "v1", credentials=creds, cache_discovery=False)
+    return _chat_service
+
+
+def enviar_mensaje_chat(space_name: str, texto: str, thread_name: str | None = None) -> None:
+    """Publica un mensaje en un espacio de Chat vía la API (usado para entregar
+    la respuesta calculada en background, fuera del ciclo request/response)."""
+    body = {"text": texto}
+    if thread_name:
+        body["thread"] = {"name": thread_name}
+    _get_chat_service().spaces().messages().create(parent=space_name, body=body).execute()
+
+
+class _PendingReply:
+    """Estado compartido entre el hilo en background y el handler síncrono
+    /googlechat para un mismo evento, usado para decidir de forma atómica
+    quién entrega la respuesta real al usuario (ver _process_and_reply y
+    googlechat_webhook): `event` señala que la respuesta ya está calculada,
+    `lock` + `claimed` arbitran, sin condición de carrera, si esa respuesta
+    se entrega de forma síncrona (dentro del JSON del propio request) o
+    asíncrona (vía enviar_mensaje_chat), pero nunca las dos."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.event = threading.Event()
+        self.claimed = False
+        self.answer: str | None = None
+
+
+def _process_and_reply(question: str, user_email: str | None, space_id: str, thread_id: str | None, state: _PendingReply) -> None:
+    """Ejecuta answer_question() en background y publica el resultado en Chat.
+    Si algo falla, el usuario recibe un mensaje de error en vez de quedarse
+    solo con el "Dame un momento..." inicial sin respuesta posterior.
+
+    Si el handler síncrono todavía está esperando (no ha expirado su timeout,
+    ver googlechat_webhook), le cede la respuesta a él -reclamando `state`
+    antes que él- en vez de mandarla también por la Chat API: evita una
+    llamada de red innecesaria y, sobre todo, una doble respuesta al mismo
+    evento."""
+    try:
+        answer = answer_question(question, user_email=user_email, space_id=space_id, thread_id=thread_id)
+        state.answer = answer
+        with state.lock:
+            if state.claimed:
+                # El handler síncrono ya expiró su espera y se quedó con el
+                # turno (devolvió el placeholder): nos toca a nosotros.
+                deliver_async = True
+            else:
+                # Llegamos primero: reclamamos el turno para el propio
+                # handler síncrono, que sigue bloqueado en state.event.wait().
+                state.claimed = True
+                deliver_async = False
+        state.event.set()
+        if deliver_async:
+            enviar_mensaje_chat(space_id, answer, thread_id)
+    except Exception as e:
+        log.error("Fallo procesando/publicando la respuesta en background: %s", e, exc_info=True)
+        try:
+            enviar_mensaje_chat(
+                space_id,
+                "⚠️ Ha ocurrido un error inesperado calculando la respuesta. Inténtalo de nuevo.",
+                thread_id,
+            )
+        except Exception as e2:
+            log.error("No se pudo notificar el error al espacio de Chat: %s", e2, exc_info=True)
+
+
 def chat_text_response(text: str) -> dict:
     """Envuelve un texto en la estructura de respuesta que espera un
     Workspace Add-on de Chat (hostAppDataAction/chatDataAction/createMessageAction)."""
@@ -302,9 +398,46 @@ def googlechat_webhook():
         space_id = message_payload.get("space", {}).get("name")
         thread_id = message.get("thread", {}).get("name")
 
+        # Dedup por id del evento entrante: Google Chat puede reintentar la
+        # entrega del mismo evento si no ve una respuesta HTTP a tiempo (hasta
+        # GOOGLE_CHAT_SYNC_WAIT_SECONDS de espera aquí abajo), por si acaso.
+        event_id = message.get("name") or event.get("eventTime")
+        if event_id:
+            with _processed_event_ids_lock:
+                if event_id in _processed_event_ids:
+                    log.info("Evento duplicado ignorado: %s", event_id)
+                    return "", 200
+                _processed_event_ids.add(event_id)
+
+        if not space_id:
+            log.error("No se pudo determinar el espacio de origen del mensaje; no se puede responder en background")
+            return jsonify(chat_text_response("No he podido procesar tu mensaje. Inténtalo de nuevo."))
+
         log.info("Pregunta recibida: %s", question)
-        answer = answer_question(question, user_email=user_email, space_id=space_id, thread_id=thread_id)
-        return jsonify(chat_text_response(answer))
+        state = _PendingReply()
+        threading.Thread(
+            target=_process_and_reply,
+            args=(question, user_email, space_id, thread_id, state),
+            daemon=True,
+        ).start()
+
+        # Esperamos a que el background termine, con margen bajo el límite real
+        # de 30s de Google Chat (ver GOOGLE_CHAT_SYNC_WAIT_SECONDS). El propio
+        # `with state.lock` decide de forma atómica, junto con _process_and_reply,
+        # quién entrega la respuesta: si seguimos aquí es porque nadie la había
+        # reclamado todavía, así que nos la quedamos nosotros.
+        state.event.wait(config.GOOGLE_CHAT_SYNC_WAIT_SECONDS)
+        with state.lock:
+            if state.claimed:
+                # El background terminó a tiempo y ya reclamó el turno para
+                # nosotros: devolvemos la respuesta real sin pasar por la
+                # Chat API.
+                return jsonify(chat_text_response(state.answer))
+            state.claimed = True
+        # No terminó a tiempo (o falló, ver _process_and_reply): devolvemos el
+        # placeholder ahora; si más tarde obtiene una respuesta real o un
+        # error, los entrega él mismo de forma asíncrona.
+        return jsonify(chat_text_response("Dame un momento, lo estoy calculando…"))
 
     # Cualquier otro tipo de evento: respondemos 200 vacío para que Google no reintente.
     return "", 200

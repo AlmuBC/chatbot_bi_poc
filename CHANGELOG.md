@@ -4,6 +4,45 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Este proyecto es una PoC; las versiones se corresponden con los pasos del
 proyecto original, no con semver estricto.
 
+## [0.7.0] — Paso 7: entrega asíncrona de respuestas en Google Chat — 2026-09-21
+
+### Contexto
+- Google Chat corta la conexión si el webhook no responde en ~30s, pero calcular
+  la respuesta (llamada al LLM + ejecución del código pandas) puede tardar más
+  que eso. `server.py::googlechat_webhook` seguía respondiendo de forma
+  puramente síncrona, así que una pregunta lenta se quedaba sin respuesta visible
+  aunque `answer_question()` la hubiera resuelto correctamente.
+
+### Añadido
+- `server.py`: `answer_question()` se ejecuta ahora en un hilo en background;
+  el handler `/googlechat` espera hasta `GOOGLE_CHAT_SYNC_WAIT_SECONDS` (por
+  defecto 20s, bajo el límite real de 30s) y devuelve la respuesta real en el
+  propio request si llega a tiempo. Si no, devuelve un placeholder ("Dame un
+  momento, lo estoy calculando…") y el propio hilo en background entrega la
+  respuesta después, de forma asíncrona, vía la Chat API (scope `chat.bot`,
+  cuenta de servicio en `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE`). `_PendingReply`
+  arbitra sin condición de carrera cuál de los dos caminos (síncrono o
+  asíncrono) entrega la respuesta, para que nunca se entreguen las dos.
+- `server.py`: deduplicación de eventos reintentados por Google Chat (mismo
+  `message.name`/`eventTime` ya procesado se ignora) — evita procesar y
+  responder dos veces la misma pregunta si Google reintenta la entrega por no
+  ver una respuesta HTTP a tiempo.
+- `llm/base.py`: nueva acción `action="off_topic"`, separada de `"refuse"`.
+  Antes una pregunta ajena al negocio (saludos, small talk, política, etc.) se
+  clasificaba como `"refuse"`, pensado en realidad para negarse a exponer un
+  dato PII en bruto — dos motivos distintos compartiendo la misma acción.
+  `"refuse"` queda ahora reservado exclusivamente para ese caso PII.
+- `config/settings.py`: `GOOGLE_CHAT_SERVICE_ACCOUNT_FILE` (ruta a la clave
+  JSON de la cuenta de servicio) y `GOOGLE_CHAT_SYNC_WAIT_SECONDS`.
+- `requirements.txt`: `google-api-python-client` (cliente de la Chat API usada
+  para la entrega asíncrona).
+- `chatbot.py`: aplicaba el guardrail (`check_prohibited`) y `pii_columns` al
+  ejecutar código de forma inconsistente respecto a `server.py` — alineado.
+
+### Documentación
+- `.env.example` y `docs/instalacion-y-puesta-en-marcha.md`: documentada
+  `GOOGLE_CHAT_SYNC_WAIT_SECONDS`.
+
 ## [0.6.0] — Documentación definitiva de la PoC — 2026-09-21
 
 ### Contexto
