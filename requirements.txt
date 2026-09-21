@@ -9,3 +9,6 @@ requests>=2.31
 
 # Solo necesario si activas LLM_PROVIDER=anthropic (ver llm/anthropic_client.py).
 # anthropic>=0.40
+
+# Solo necesario para ejecutar la suite de tests (ver tests/).
+pytest>=8.0

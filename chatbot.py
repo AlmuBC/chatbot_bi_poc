@@ -16,10 +16,11 @@ import pandas as pd
 
 import config
 import llm
-from core.semantic_layer import load_semantic_layer, render_semantic_prompt, get_dataframe_variable_map
+from core.semantic_layer import load_semantic_layer, render_semantic_prompt, get_dataframe_variable_map, get_pii_columns
 from core.data_engine import load_tables, describe_schema
 from llm import build_system_prompt, ask_llm_for_code
 from core.sandbox import run_generated_code, UnsafeCodeError
+from core.pii import mask_emails, mask_known_pii_names
 
 BANNER = """
 ==================================================================
@@ -48,7 +49,8 @@ def main():
     dataframes = load_tables(config.EXCEL_PATH, table_names)
 
     only_df = next(iter(dataframes.values()))
-    schema_block = describe_schema(only_df)
+    pii_columns = get_pii_columns(semantic)
+    schema_block = describe_schema(only_df, pii_columns=pii_columns)
     semantic_block = render_semantic_prompt(semantic)
     system_prompt = build_system_prompt(semantic_block, schema_block)
 
@@ -66,6 +68,12 @@ def main():
         if question.lower() in {"salir", "exit", "quit"}:
             print("Hasta luego.")
             break
+
+        # PII: se enmascara en el punto de entrada, antes de que cruce hacia
+        # el LLM (ver server.py, mismo criterio). La pregunta real sin
+        # enmascarar no sobrevive más allá de esta línea.
+        question = mask_emails(question)
+        question = mask_known_pii_names(question, only_df, pii_columns)
 
         try:
             decision = ask_llm_for_code(system_prompt, question)

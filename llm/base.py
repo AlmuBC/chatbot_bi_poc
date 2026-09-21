@@ -34,9 +34,19 @@ REGLAS:
    el código debe trabajar solo con AGREGADOS (sumas, medias, conteos) y nunca debe incluir
    la columna PII cruda en el `result`. Si la pregunta busca exclusivamente exponer el dato
    PII en bruto sin ningún agregado posible, responde action="refuse".
-4. Nunca uses import, ni acceso a archivos, red o sistema. Solo pandas (pd), numpy (np) y
+4. La pregunta del usuario puede contener los placeholders literales "<EMAIL-PII>" y/o
+   "<NOMBRE-PII>" en vez de un email o un nombre real (se enmascaran antes de llegar aquí,
+   nunca los verás en claro). Si responder requiere identificar o filtrar por ESE email o
+   ESA persona concreta (p. ej. "el presupuesto gestionado por <EMAIL-PII>" o "cuánto
+   gestiona <NOMBRE-PII>"), no puedes generar ese filtro porque no conoces el valor real:
+   responde action="refuse" con una explicación honesta, por ejemplo "No puedo identificar
+   a esa persona porque ese dato está protegido; puedo darte agregados por sector, canal,
+   etc. si te sirve". Si en cambio la pregunta NO depende del valor de ese email/nombre
+   (p. ej. pide un agregado por sector, canal u otra columna no PII, y el placeholder solo
+   aparece de forma incidental o no aparece), responde con normalidad como en la regla 1.
+5. Nunca uses import, ni acceso a archivos, red o sistema. Solo pandas (pd), numpy (np) y
    el DataFrame `df` ya cargado en memoria.
-5. Responde EXCLUSIVAMENTE con un JSON válido, sin texto adicional, sin markdown, con esta forma:
+6. Responde EXCLUSIVAMENTE con un JSON válido, sin texto adicional, sin markdown, con esta forma:
 {{
   "action": "execute_code" | "ask_clarification" | "refuse",
   "code": "código pandas si action=execute_code, si no cadena vacía",

@@ -22,11 +22,13 @@ from core.semantic_layer import (
     render_semantic_prompt,
     get_dataframe_variable_map,
     get_semantic_layer_version,
+    get_pii_columns,
 )
 from core.data_engine import load_tables, describe_schema
 from llm import build_system_prompt, ask_llm_for_code
 from core.context import get_recent_history
 from core.sandbox import run_generated_code
+from core.pii import mask_emails, mask_known_pii_names
 from chatbot import format_result_for_display  # reutilizamos el mismo formateador que en el CLI
 from observability.logger import log_interaction, pseudonymize_user_email
 
@@ -39,7 +41,9 @@ app = Flask(__name__)
 _semantic = load_semantic_layer(config.SEMANTIC_LAYER_PATH)
 _table_names = list(get_dataframe_variable_map(_semantic).keys())
 _dataframes = load_tables(config.EXCEL_PATH, _table_names)
-_schema_block = describe_schema(next(iter(_dataframes.values())))
+_pii_columns = get_pii_columns(_semantic)
+_reference_df = next(iter(_dataframes.values()))
+_schema_block = describe_schema(_reference_df, pii_columns=_pii_columns)
 _semantic_block = render_semantic_prompt(_semantic)
 _semantic_layer_version = get_semantic_layer_version(_semantic)
 _system_prompt = build_system_prompt(_semantic_block, _schema_block)
@@ -111,6 +115,13 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
     listo para meter en la respuesta JSON de Google Chat. Registra cada interacción
     (pregunta, código generado, resultado/error y latencia) vía logger.py."""
     start = time.monotonic()
+    # PII: se enmascara la pregunta en el punto de entrada, lo antes posible,
+    # antes de que cruce cualquier frontera (red hacia el LLM, disco/log,
+    # historial). La pregunta real sin enmascarar no sobrevive más allá de
+    # esta línea: ningún dato PII debe llegar al modelo bajo ninguna
+    # circunstancia, ni siquiera dentro de la pregunta del usuario.
+    question = mask_emails(question)
+    question = mask_known_pii_names(question, _reference_df, _pii_columns)
     generated_code = None
     execution_result = None
     execution_error = None
@@ -171,6 +182,19 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
     else:
         final_response = f"⚠️ Respuesta inesperada del modelo: {decision}"
         status = "error"
+
+    # Enmascarado de PII (emails y nombres conocidos) en lo que se persiste en
+    # el log y en lo que llega al usuario final. `question` ya llegó
+    # enmascarada al LLM (ver arriba); execution_result/final_response/
+    # generated_code pueden contener un email o un nombre si el código
+    # generado por el LLM lo filtra o expone pese a todo (defensa en
+    # profundidad — p. ej. un `.unique()` sobre la columna Responsable).
+    execution_result = mask_emails(execution_result)
+    final_response = mask_emails(final_response)
+    generated_code = mask_emails(generated_code)
+    execution_result = mask_known_pii_names(execution_result, _reference_df, _pii_columns)
+    final_response = mask_known_pii_names(final_response, _reference_df, _pii_columns)
+    generated_code = mask_known_pii_names(generated_code, _reference_df, _pii_columns)
 
     _safe_log_interaction(
         user_email=user_email, question=question, llm_action=llm_action,

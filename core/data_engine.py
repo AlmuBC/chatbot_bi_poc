@@ -19,13 +19,22 @@ def load_tables(excel_path: Path, table_names: list[str]) -> dict[str, pd.DataFr
     return tables
 
 
-def describe_schema(df: pd.DataFrame, n_examples: int = 3) -> str:
+def describe_schema(df: pd.DataFrame, n_examples: int = 3, pii_columns: list[str] | None = None) -> str:
     """Genera un resumen de columnas + tipos + un par de valores de ejemplo,
-    para dar contexto real al LLM (sin volcar los 1000 registros)."""
+    para dar contexto real al LLM (sin volcar los 1000 registros).
+
+    Las columnas marcadas como PII en la capa semántica (`pii_columns`) nunca
+    muestran valores reales aquí: el LLM sigue viendo que la columna existe y
+    su tipo, pero no ejemplos, de forma determinista por código (no depende
+    de que el LLM respete una instrucción del prompt)."""
+    pii_columns = set(pii_columns or [])
     lines = []
     for col in df.columns:
         dtype = str(df[col].dtype)
-        sample_vals = df[col].dropna().unique()[:n_examples]
-        sample_str = ", ".join(str(v) for v in sample_vals)
+        if col in pii_columns:
+            sample_str = "<PII - valor no expuesto>"
+        else:
+            sample_vals = df[col].dropna().unique()[:n_examples]
+            sample_str = ", ".join(str(v) for v in sample_vals)
         lines.append(f"    - {col} (tipo: {dtype}) — ejemplos: {sample_str}")
     return "\n".join(lines)

@@ -4,6 +4,80 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Este proyecto es una PoC; las versiones se corresponden con los pasos del
 proyecto original, no con semver estricto.
 
+## [0.3.0] — Paso 4: enmascarado determinista de PII — 2026-09-21
+
+### Añadido
+- `core/data_engine.py`: `describe_schema()` acepta ahora `pii_columns` (reutiliza
+  `semantic_layer.get_pii_columns()`, sin duplicar parsing de YAML). Para las columnas
+  marcadas `pii_sensitive: true` (hoy `Responsable`), el bloque de esquema que se manda
+  al LLM sustituye los valores de ejemplo reales por `<PII - valor no expuesto>` — el
+  LLM sigue viendo que la columna existe y su tipo, nunca un dato real. Determinista por
+  código, no depende de que el LLM respete ninguna instrucción del prompt.
+- `core/pii.py` (nuevo módulo): enmascarado de PII en texto libre.
+  - `mask_emails(text)`: regex genérico (cualquier email válido, no solo el dominio del
+    dataset), sustituye por `<EMAIL-PII>`.
+  - `mask_known_pii_names(text, df, pii_columns)`: data-driven — extrae los nombres de
+    persona reales de las columnas `pii_sensitive` del DataFrame (formato
+    `"Nombre Apellido (email)"` de `Responsable`), detecta ambos órdenes
+    (`Nombre Apellido` / `Apellido Nombre`) de forma case-insensitive, y sustituye por
+    `<NOMBRE-PII>`. Genérico por si se añaden más columnas PII con nombres en el futuro.
+  - Ambas sin dependencias nuevas (nada de spaCy/Presidio), pensadas para el "hot path"
+    de cada interacción.
+- `server.py` / `chatbot.py`: `mask_emails()` y `mask_known_pii_names()` se aplican **en
+  el punto de entrada**, sobre la pregunta del usuario, antes de que cruce cualquier
+  frontera (red hacia el LLM, disco/log, historial). La pregunta real sin enmascarar no
+  sobrevive más allá de esa línea local. Como defensa en profundidad, también se aplican
+  sobre `execution_result`, `final_response` y `generated_code` antes de loguear/responder
+  (por si el código generado expusiera el dato de otra forma, p. ej. un `.unique()` sobre
+  la columna PII).
+- `llm/base.py`: nueva regla 4 en el prompt de sistema — si la pregunta trae el
+  placeholder `<EMAIL-PII>` o `<NOMBRE-PII>` y responder exige identificar a esa persona
+  o filtrar por ese email concreto, el modelo debe responder `action: "refuse"` con una
+  explicación honesta ("no puedo identificar a esa persona porque ese dato está
+  protegido..."); si la pregunta es un agregado que no depende de ese valor (por sector,
+  canal, etc.), responde con normalidad.
+- `tests/test_pii.py` (nuevo, primera suite de tests del proyecto): unitarios de
+  `describe_schema`, `mask_emails` y `mask_known_pii_names`, más dos escenarios de
+  integración end-to-end contra `server.answer_question` (LLM mockeado): una pregunta
+  que exige identificar a la persona por email o por nombre (debe dar `refuse`, sin que
+  el dato llegue a `generated_code`/`execution_result`/`final_response`/log/historial) y
+  una pregunta agregada que no depende de PII (debe funcionar con normalidad, para
+  detectar un `refuse` disparándose de más). `pytest>=8.0` añadido a `requirements.txt`
+  como dependencia de test.
+
+### Cambiado (diseño)
+- Iteración inicial: `mask_emails()` se aplicaba solo antes de loguear, dejando que la
+  pregunta con el email real llegase al LLM (para poder generar el filtro por ese
+  Responsable). Se abandonó ese diseño: ningún dato PII debe llegar al modelo bajo
+  ninguna circunstancia, ni siquiera dentro de la pregunta. Ahora el enmascarado ocurre
+  antes de la llamada al LLM, y es el propio modelo quien decide `refuse` cuando detecta
+  que la respuesta exigiría el valor real oculto tras el placeholder.
+
+### Corregido (incidente de producción)
+- **Fuga confirmada con log real**: la pregunta "¿cuánto presupuesto gestiona Almudena
+  Barreiro?" (nombre completo, sin usar el email) no estaba cubierta por
+  `mask_emails()` — cruzó sin enmascarar hacia el LLM, que generó un filtro válido por
+  `Responsable`, y el resultado con el desglose completo de esa persona se logueó
+  (`generated_code`, `execution_result` y `final_response` en claro; latencia 108436 ms).
+  Solo no llegó a mostrarse al usuario porque el cliente cortó la conexión antes por la
+  latencia — no por ninguna protección real. Corregido con `mask_known_pii_names()`,
+  aplicado en el mismo punto de entrada que `mask_emails()`.
+
+### Investigado, no corregido (diagnóstico de latencia)
+- Dos interacciones reales de producción registraron ~99 s y ~108 s de latencia (vs.
+  3–24 s habitual para el resto del histórico), justo las dos ligadas al incidente
+  anterior. Descartada la complejidad del código generado como causa (longitud de
+  `generated_code` similar a la de interacciones rápidas). Al reconstruir inicio/fin a
+  partir de `timestamp` y `latency_ms`, ambas interacciones lentas se solapan en el
+  tiempo con otras peticiones concurrentes. Hipótesis principal: `llm/opencode_client.py`
+  genera un único `_OPENCODE_SESSION_ID` por proceso, compartido por todas las
+  peticiones de todos los usuarios en la cabecera `x-opencode-session`; si el backend de
+  OpenCode serializa bajo ese header, peticiones simultáneas quedan encoladas. Agravante
+  posible: reintento de entrega del webhook de Google Chat si no recibe ack a tiempo
+  (compitiendo por la misma sesión compartida). Sin confirmar ni corregir todavía — el
+  log actual tampoco captura reintentos internos del SDK, así que no se puede descartar
+  del todo esa vía con los datos disponibles.
+
 ## [0.2.4] — Saneado del proyecto: eliminados scripts de diagnóstico y residuo de entorno — 2026-09-21
 
 ### Eliminado

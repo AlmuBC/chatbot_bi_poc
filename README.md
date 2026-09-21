@@ -71,6 +71,9 @@ Preguntas de ejemplo:
 - `Dime el CPA medio de las campañas de Social Ads frente a Programmatic.`
 - `¿Cómo han ido las ventas este mes?` → el bot debería pedir aclaración
 - `Dame la lista de nombres y emails de todos los responsables de campaña` → debe negarse
+- `¿Cuánto presupuesto gestiona Almudena Barreiro?` → debe negarse (ver sección 6,
+  enmascarado de PII): ni el email ni el nombre completo de un Responsable real llegan
+  nunca al LLM.
 
 Para probar los endpoints del servidor sin pasar por Google Chat (health check y los
 distintos tipos de evento del webhook), usa `requests.http`.
@@ -141,7 +144,60 @@ Si el código generado falla en el sandbox, el usuario recibe siempre un mensaje
 genérico ("No he podido calcular la respuesta a tu pregunta...") — el traceback real
 solo queda en `execution_error` dentro del log, nunca se expone en el chat.
 
-## 6. Memoria de conversación de corto plazo
+## 6. Enmascarado de PII
+
+Tres mecanismos deterministas y sin dependencias de NLP/NER, todos en `core/pii.py`
+(y `core/data_engine.py` para el primero):
+
+1. **Esquema que ve el LLM (`describe_schema`):** las columnas marcadas `pii_sensitive:
+   true` en `semantic_layer.yaml` (hoy solo `Responsable`) nunca muestran valores de
+   ejemplo reales en el bloque de esquema del prompt — se sustituyen por
+   `<PII - valor no expuesto>`. El LLM sigue viendo que la columna existe y su tipo,
+   nunca un dato real. Determinista por código: aunque el LLM ignorase la regla del
+   prompt, el dato ni siquiera está ahí.
+2. **Emails en texto libre (`mask_emails`):** cualquier email (regex genérico, no solo
+   del dominio del dataset) se sustituye por `<EMAIL-PII>`.
+3. **Nombres conocidos (`mask_known_pii_names`):** data-driven contra los valores
+   reales de las columnas `pii_sensitive` del propio DataFrame — en este dataset, los
+   "Responsable" son un conjunto finito y cerrado. Detecta el nombre en cualquier orden
+   (`Nombre Apellido` / `Apellido Nombre`) y sin distinguir mayúsculas/minúsculas,
+   sustituyéndolo por `<NOMBRE-PII>`.
+
+Los dos enmascarados de texto libre se aplican **en el punto de entrada**, antes de que
+la pregunta del usuario cruce hacia el LLM (`server.py::answer_question` /
+`chatbot.py::main`) — no solo antes de loguear. Ningún dato PII llega al modelo, ni
+siquiera dentro de la pregunta. Como defensa en profundidad, también se aplican sobre
+`execution_result`, `final_response` y `generated_code` justo antes de loguear/responder,
+por si el código generado expusiera el dato de otra forma (p. ej. un `.unique()` sobre
+la columna PII).
+
+`llm/base.py` (regla 4 del prompt de sistema) le dice al LLM cómo comportarse cuando la
+pregunta trae `<EMAIL-PII>` o `<NOMBRE-PII>`: si responder exige identificar a esa
+persona concreta, debe responder `action: "refuse"` con una explicación honesta ("no
+puedo identificar a esa persona porque ese dato está protegido..."); si la pregunta es
+un agregado que no depende de ese valor (por sector, canal, etc.), responde con
+normalidad.
+
+> **Alcance actual:** esto protege el email (patrón genérico, cualquier dominio) y los
+> nombres que YA existen en los datos (`Responsable`). No es un NER general — un nombre
+> de persona que no esté en el dataset no se detecta. Ver "Qué queda para los próximos
+> pasos" para el enfoque más robusto (tipo Microsoft Presidio) previsto más adelante.
+
+### Tests
+
+```bash
+pip install -r requirements.txt  # incluye pytest
+pytest tests/ -v
+```
+
+`tests/test_pii.py` cubre los tres mecanismos anteriores (unitarios) y dos escenarios
+de integración end-to-end contra `server.answer_question` (mockeando el LLM): una
+pregunta que exige identificar a una persona por email o por nombre (debe dar
+`refuse`, sin que el dato llegue al LLM, al log ni al historial) y una pregunta
+agregada que no depende de PII (debe funcionar con normalidad — para detectar un
+`refuse` disparándose de más).
+
+## 7. Memoria de conversación de corto plazo
 
 Cada pregunta se procesaba de forma aislada: el LLM no tenía memoria de turnos
 anteriores, así que si el bot pedía una aclaración ("¿te refieres a conversiones o a
@@ -163,7 +219,7 @@ escritura: si falla, se responde sin contexto en vez de romper la respuesta.
 > nunca se encontrara historial. `thread_id` se sigue guardando en el log como metadata
 > de Google Chat, solo dejó de usarse como clave de agrupación del historial.
 
-## 7. Cambiar de proveedor de LLM
+## 8. Cambiar de proveedor de LLM
 
 Todo el código específico de cada proveedor vive en dos sitios, compartimentados por
 proveedor y por responsabilidad:
@@ -185,7 +241,7 @@ para `anthropic` hace falta además `pip install anthropic`. Para añadir un pro
 nuevo: copia uno de los ejemplos en ambas carpetas y regístralo en
 `llm/__init__.py::_PROVIDER_MODULES`.
 
-## 8. Notas técnicas descubiertas durante la implementación
+## 9. Notas técnicas descubiertas durante la implementación
 
 Estas son particularidades reales con las que nos encontramos (no están en la
 documentación "de libro" de Google/OpenCode, o están dispersas):
@@ -210,17 +266,28 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
 - **El reloj del sistema debe estar sincronizado**: la verificación del JWT falla con
   "Token used too early" si el reloj de Windows está desajustado unos segundos.
 
-## 9. Qué queda para los próximos pasos (no incluido aquí a propósito)
+## 10. Qué queda para los próximos pasos (no incluido aquí a propósito)
 
 - **Paso 3** — Gateway tipo LiteLLM delante de OpenCode, para no llamar directo al proveedor.
-- **Paso 4** — Enmascarado automático de PII con una herramienta tipo Microsoft Presidio
-  (hoy el control de PII es solo una regla en el prompt del LLM, no una detección robusta).
+- **Paso 4** — ✅ mecánica base implementada (ver sección 6): esquema sin valores PII
+  reales, emails enmascarados por regex, y nombres conocidos (los que ya existen en el
+  dataset) enmascarados antes de llegar al LLM, con `refuse` cuando la pregunta depende
+  de identificar a esa persona concreta. Pendiente: un enfoque tipo Microsoft
+  Presidio/NER para detectar nombres de persona que NO estén ya en los datos — hoy
+  `mask_known_pii_names` es data-driven, cerrado al conjunto conocido de `Responsable`.
 - **Paso 5** — Guardarraíles reales contra prompt injection (NeMo Guardrails o similar).
   El `core/sandbox.py` actual bloquea patrones obvios (`import`, `open(`, `os.`...) pero es
   un filtro básico, no una defensa de producción.
 - **Paso 6** — Perfiles de usuario (más/menos preguntas de afinado según el nivel técnico).
 - Estabilidad de infraestructura: la URL del túnel cambia en cada reinicio, y `server.py`
   corre con el servidor de desarrollo de Flask (no apto para producción).
+- **Latencia anómala bajo tráfico concurrente (diagnosticado, no corregido):** dos
+  interacciones reales registraron ~99–108 s de latencia (vs. 3–24 s habitual),
+  solapadas en el tiempo con otras peticiones concurrentes. Hipótesis principal:
+  `llm/opencode_client.py` usa un único `_OPENCODE_SESSION_ID` por proceso, compartido
+  por todas las peticiones de todos los usuarios — si el backend de OpenCode serializa
+  bajo ese header, peticiones simultáneas quedan encoladas. Agravante posible: reintento
+  de entrega del webhook de Google Chat si no recibe ack a tiempo. Sin confirmar todavía.
 
 ## Estructura del proyecto
 
@@ -243,11 +310,14 @@ chatbot_bi_poc/
 │   └── openai_client.py          # ejemplo
 ├── core/                       # lógica de negocio, independiente del proveedor de LLM
 │   ├── semantic_layer.py         # carga y formatea semantic_layer.yaml
-│   ├── data_engine.py             # carga el Excel a pandas
+│   ├── data_engine.py             # carga el Excel a pandas; describe_schema sin PII real
+│   ├── pii.py                     # enmascarado determinista de emails y nombres conocidos
 │   ├── sandbox.py                 # ejecuta el código generado de forma acotada
 │   └── context.py                 # memoria de conversación de corto plazo (a partir del log)
 ├── observability/
 │   └── logger.py                 # logging de trazabilidad en logs/interactions.jsonl
+├── tests/
+│   └── test_pii.py                # tests del enmascarado de PII (unitarios + integración)
 ├── data/                       # copia del Excel y el YAML de origen
 ├── logs/                       # interactions.jsonl (generado en runtime, ignorado por git)
 ├── requirements.txt
