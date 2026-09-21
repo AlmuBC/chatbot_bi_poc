@@ -4,6 +4,55 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Este proyecto es una PoC; las versiones se corresponden con los pasos del
 proyecto original, no con semver estricto.
 
+## [0.4.0] — Paso 5: guardrail propio contra prompt injection y extracción masiva de PII — 2026-09-21
+
+### Contexto
+- Antes de implementar, se evaluaron dos opciones para insertar la defensa: NeMo
+  Guardrails (librería open-source) vs. una capa propia de detección de intenciones
+  prohibidas, coherente con la decisión ya tomada para PII (reglas propias en vez de
+  Presidio). Se descartó NeMo Guardrails: requeriría adaptar `llm/opencode_client.py`
+  (SDK `openai` puro contra un endpoint custom) a la interfaz LangChain, dependencias
+  pesadas (`nemoguardrails`, `langchain*`, embeddings), un lenguaje de configuración
+  nuevo (Colang), y típicamente una o dos llamadas adicionales al LLM por petición
+  (self-check rails) — latencia y coste relevantes para el tamaño de este PoC. La capa
+  propia no añade dependencias, es determinista y encaja con el mismo patrón que
+  `core/pii.py`.
+
+### Añadido
+- `core/guardrails.py` (nuevo módulo): `check_prohibited(question) -> str | None`.
+  - Detecta intentos de cambio de rol/instrucciones (jailbreak/prompt injection) por
+    regex, en español e inglés ("ignora las reglas anteriores", "ahora eres...",
+    "olvida tu rol", "actúa como", "nuevas instrucciones", "ignore previous
+    instructions", "you are now", "pretend you are...").
+  - Detecta extracción masiva de PII sin agregación: combina una forma de petición
+    masiva ("lista todos", "dame todos los nombres/emails/responsables", "exporta...")
+    con que la pregunta mencione la columna PII o sus sinónimos (reutiliza
+    `semantic_layer.get_pii_columns()`) sin ningún término de agregación ("cuánto",
+    "total", "promedio"...), para no bloquear preguntas legítimas como "¿cuántos
+    responsables gestionan campañas de Retail?".
+  - Sin dependencias nuevas, mismo criterio que `core/pii.py`: regex/listas
+    deterministas, sin llamadas a red ni a ningún modelo.
+- `server.py`: `answer_question()` llama a `check_prohibited()` justo después del
+  enmascarado de PII y antes de `ask_llm_for_code()`. Si detecta un motivo de bloqueo,
+  corta ahí mismo — sin gastar ninguna llamada al LLM —, responde con un mensaje
+  genérico y loguea con `status="blocked"` / `llm_action="blocked"` (el motivo detallado
+  solo queda en el log, nunca se expone al usuario).
+- `llm/base.py`: nueva regla 0 en el prompt de sistema — si la pregunta no tiene
+  relación con las campañas de marketing ni con los datos disponibles en `df` (política,
+  actualidad, opinión personal...), el LLM debe responder `action: "refuse"` en vez de
+  forzar una traducción a pandas sin sentido.
+- `core/sandbox.py`: nueva `validate_pii_exfiltration(code, pii_columns)`, llamada
+  dentro de `run_generated_code()` (parámetro `pii_columns` opcional, retrocompatible).
+  Segunda capa de defensa sobre el código pandas ya generado (no un reemplazo de
+  `validate_code()`, que bloquea el escape del sandbox): bloquea `.unique()` sobre la
+  columna PII, asignación de la columna completa sin agregación a `result`, y
+  `.to_csv()` que referencia esa columna.
+- `tests/test_guardrails.py` (nuevo): unitarios de `check_prohibited()` (intentos de
+  cambio de rol, preguntas legítimas de negocio, extracción masiva sin agregar,
+  extracción agregada correctamente sobre la columna PII) y dos escenarios de
+  integración end-to-end contra `server.answer_question` (una pregunta bloqueada nunca
+  llega a llamar al LLM; una legítima no se ve afectada).
+
 ## [0.3.0] — Paso 4: enmascarado determinista de PII — 2026-09-21
 
 ### Añadido

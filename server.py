@@ -29,6 +29,7 @@ from llm import build_system_prompt, ask_llm_for_code
 from core.context import get_recent_history
 from core.sandbox import run_generated_code
 from core.pii import mask_emails, mask_known_pii_names
+from core.guardrails import check_prohibited
 from chatbot import format_result_for_display  # reutilizamos el mismo formateador que en el CLI
 from observability.logger import log_interaction, pseudonymize_user_email
 
@@ -122,6 +123,25 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
     # circunstancia, ni siquiera dentro de la pregunta del usuario.
     question = mask_emails(question)
     question = mask_known_pii_names(question, _reference_df, _pii_columns)
+
+    # Guardrail previo al LLM: si la pregunta es un intento de cambio de rol
+    # (jailbreak/prompt injection) o de extracción masiva de PII en bruto,
+    # se corta aquí mismo, sin gastar ninguna llamada al LLM. El motivo
+    # detallado (blocked_reason) solo se registra en el log; el usuario ve
+    # un mensaje genérico que no revela qué patrón lo disparó.
+    blocked_reason = check_prohibited(question)
+    if blocked_reason:
+        final_response = "No puedo ayudarte con eso. Solo respondo preguntas sobre las campañas de marketing con los datos disponibles."
+        _safe_log_interaction(
+            user_email=user_email, question=question, llm_action="blocked",
+            generated_code=None, execution_result=None, execution_error=blocked_reason,
+            final_response=final_response, status="blocked",
+            latency_ms=int((time.monotonic() - start) * 1000),
+            model=llm.MODEL_NAME, semantic_layer_version=_semantic_layer_version,
+            space_id=space_id, thread_id=thread_id,
+        )
+        return final_response
+
     generated_code = None
     execution_result = None
     execution_error = None
@@ -161,7 +181,7 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
     elif llm_action == "execute_code":
         generated_code = decision.get("code", "")
         try:
-            result = run_generated_code(generated_code, _dataframes)
+            result = run_generated_code(generated_code, _dataframes, pii_columns=_pii_columns)
             execution_result = format_result_for_display(result)
             status = "success"
             explicacion = decision.get("explanation", "")

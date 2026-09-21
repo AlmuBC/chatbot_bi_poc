@@ -197,7 +197,57 @@ pregunta que exige identificar a una persona por email o por nombre (debe dar
 agregada que no depende de PII (debe funcionar con normalidad — para detectar un
 `refuse` disparándose de más).
 
-## 7. Memoria de conversación de corto plazo
+## 7. Guardrail contra prompt injection y extracción masiva de PII
+
+`core/guardrails.py`: `check_prohibited(question)` se ejecuta justo después del
+enmascarado de PII (sección 6) y antes de llamar al LLM (`server.py::answer_question`).
+Si detecta un motivo de bloqueo, corta ahí mismo — sin gastar ninguna llamada al
+LLM — y responde con un mensaje genérico ("No puedo ayudarte con eso. Solo respondo
+preguntas sobre las campañas de marketing con los datos disponibles."). El motivo
+detallado se registra en el log (`status: "blocked"`, `llm_action: "blocked"`), pero
+nunca se expone al usuario, para no revelar qué patrón lo disparó.
+
+Igual que el enmascarado de PII (sección 6) y por el mismo motivo (evitar dependencias
+nuevas como Presidio), es un guardrail propio por regex/listas, determinista y sin
+llamadas a red ni a ningún modelo:
+
+1. **Cambio de rol / instrucciones (jailbreak, prompt injection):** patrones tipo
+   "ignora las reglas anteriores", "ahora eres...", "olvida tu rol", "actúa como",
+   "nuevas instrucciones", y sus equivalentes en inglés ("ignore previous instructions",
+   "you are now", "pretend you are...").
+2. **Extracción masiva de PII sin agregación:** combina una forma de petición masiva
+   ("lista todos", "dame todos los nombres/emails/responsables", "exporta...") con que
+   la pregunta mencione la columna PII o sus sinónimos (reutiliza
+   `semantic_layer.get_pii_columns()`, igual que el enmascarado de PII) **sin** ningún
+   término de agregación ("cuánto", "total", "promedio", "cuántos"...). Una pregunta como
+   "¿cuántos responsables gestionan campañas de Retail?" pasa sin bloqueo porque agrega;
+   "dame todos los nombres de los responsables" se bloquea.
+
+Además, `llm/base.py` refuerza la regla 0 del prompt de sistema: si la pregunta no
+tiene relación con las campañas de marketing ni con los datos disponibles en `df`
+(política, actualidad, opinión personal...), el LLM debe responder `action: "refuse"`
+en vez de forzar una traducción a pandas sin sentido.
+
+Como segunda capa, `core/sandbox.py::validate_pii_exfiltration()` revisa el código
+pandas ya generado (antes de ejecutarlo) buscando patrones de exfiltración de la
+columna PII con código "legítimo" dentro del sandbox: `.unique()` sobre la columna,
+asignación de la columna completa sin ningún agregado a `result`, o `.to_csv()` que
+referencia esa columna. Es una capa adicional a `validate_code()` (que bloquea el
+escape del sandbox: `import`, `os.`, `exec(`...), no un reemplazo.
+
+> **Alcance actual:** al igual que el enmascarado de PII, es un guardrail basado en
+> patrones conocidos, no un clasificador semántico — ver la comparativa NeMo Guardrails
+> vs. capa propia que motivó esta decisión en la sección 11 (Paso 5).
+
+### Tests
+
+`tests/test_guardrails.py` cubre `check_prohibited()` (intentos de cambio de rol,
+preguntas legítimas, extracción masiva sin agregar, extracción agregada correctamente)
+y dos escenarios de integración end-to-end contra `server.answer_question` (LLM
+mockeado): una pregunta bloqueada nunca llega a llamar al LLM, y una legítima no se ve
+afectada.
+
+## 8. Memoria de conversación de corto plazo
 
 Cada pregunta se procesaba de forma aislada: el LLM no tenía memoria de turnos
 anteriores, así que si el bot pedía una aclaración ("¿te refieres a conversiones o a
@@ -219,7 +269,7 @@ escritura: si falla, se responde sin contexto en vez de romper la respuesta.
 > nunca se encontrara historial. `thread_id` se sigue guardando en el log como metadata
 > de Google Chat, solo dejó de usarse como clave de agrupación del historial.
 
-## 8. Cambiar de proveedor de LLM
+## 9. Cambiar de proveedor de LLM
 
 Todo el código específico de cada proveedor vive en dos sitios, compartimentados por
 proveedor y por responsabilidad:
@@ -241,7 +291,7 @@ para `anthropic` hace falta además `pip install anthropic`. Para añadir un pro
 nuevo: copia uno de los ejemplos en ambas carpetas y regístralo en
 `llm/__init__.py::_PROVIDER_MODULES`.
 
-## 9. Notas técnicas descubiertas durante la implementación
+## 10. Notas técnicas descubiertas durante la implementación
 
 Estas son particularidades reales con las que nos encontramos (no están en la
 documentación "de libro" de Google/OpenCode, o están dispersas):
@@ -266,7 +316,7 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
 - **El reloj del sistema debe estar sincronizado**: la verificación del JWT falla con
   "Token used too early" si el reloj de Windows está desajustado unos segundos.
 
-## 10. Qué queda para los próximos pasos (no incluido aquí a propósito)
+## 11. Qué queda para los próximos pasos (no incluido aquí a propósito)
 
 - **Paso 3** — Gateway tipo LiteLLM delante de OpenCode, para no llamar directo al proveedor.
 - **Paso 4** — ✅ mecánica base implementada (ver sección 6): esquema sin valores PII
@@ -275,9 +325,19 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
   de identificar a esa persona concreta. Pendiente: un enfoque tipo Microsoft
   Presidio/NER para detectar nombres de persona que NO estén ya en los datos — hoy
   `mask_known_pii_names` es data-driven, cerrado al conjunto conocido de `Responsable`.
-- **Paso 5** — Guardarraíles reales contra prompt injection (NeMo Guardrails o similar).
-  El `core/sandbox.py` actual bloquea patrones obvios (`import`, `open(`, `os.`...) pero es
-  un filtro básico, no una defensa de producción.
+- **Paso 5** — ✅ mecánica base implementada (ver sección 7): guardrail propio
+  (`core/guardrails.py`) contra cambio de rol/prompt injection y extracción masiva de
+  PII, corta antes de llamar al LLM; regla 0 reforzada en `llm/base.py` para temas
+  fuera de negocio; `core/sandbox.py::validate_pii_exfiltration()` como segunda capa
+  sobre el código ya generado. Se evaluó y descartó NeMo Guardrails (requeriría
+  adaptar el cliente OpenCode a la interfaz de LangChain, dependencias pesadas —
+  `nemoguardrails` + `langchain*` + embeddings —, un lenguaje de configuración nuevo
+  Colang, y llamadas adicionales al LLM por cada rail, rompiendo el patrón "sin
+  dependencias nuevas" ya aplicado con PII/Presidio) a favor de reglas propias,
+  coherente con esa misma decisión. Pendiente: capa 2 opcional (clasificador LLM
+  barato) si en uso real aparecen jailbreaks que la capa de regex no capture; el
+  `core/sandbox.py` sigue sin ser un aislamiento de seguridad de nivel producción
+  (proceso aislado, límites de recursos).
 - **Paso 6** — Perfiles de usuario (más/menos preguntas de afinado según el nivel técnico).
 - Estabilidad de infraestructura: la URL del túnel cambia en cada reinicio, y `server.py`
   corre con el servidor de desarrollo de Flask (no apto para producción).
@@ -312,12 +372,14 @@ chatbot_bi_poc/
 │   ├── semantic_layer.py         # carga y formatea semantic_layer.yaml
 │   ├── data_engine.py             # carga el Excel a pandas; describe_schema sin PII real
 │   ├── pii.py                     # enmascarado determinista de emails y nombres conocidos
+│   ├── guardrails.py              # guardrail contra prompt injection y extracción masiva de PII
 │   ├── sandbox.py                 # ejecuta el código generado de forma acotada
 │   └── context.py                 # memoria de conversación de corto plazo (a partir del log)
 ├── observability/
 │   └── logger.py                 # logging de trazabilidad en logs/interactions.jsonl
 ├── tests/
-│   └── test_pii.py                # tests del enmascarado de PII (unitarios + integración)
+│   ├── test_pii.py                # tests del enmascarado de PII (unitarios + integración)
+│   └── test_guardrails.py         # tests del guardrail (unitarios + integración)
 ├── data/                       # copia del Excel y el YAML de origen
 ├── logs/                       # interactions.jsonl (generado en runtime, ignorado por git)
 ├── requirements.txt

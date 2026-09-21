@@ -21,6 +21,12 @@ ESQUEMA REAL DE LOS DATOS (df), con tipos y ejemplos de valores:
 {schema_block}
 
 REGLAS:
+0. Si la pregunta no tiene relación con las campañas de marketing ni con los datos
+   disponibles en `df` (por ejemplo política, actualidad, opinión personal, o cualquier
+   tema ajeno al negocio), responde directamente con action="refuse" y una explanation
+   breve indicando que solo respondes preguntas sobre las campañas de marketing con los
+   datos disponibles. No generes código ni fuerces una traducción a pandas que no tiene
+   sentido para esa pregunta.
 1. Si la pregunta es lo bastante clara para calcularse con las columnas/fórmulas de arriba,
    responde con action="execute_code" y escribe código pandas que deje el resultado final
    en una variable llamada `result` (puede ser un número, una Serie, un dict o un DataFrame
