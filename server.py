@@ -26,7 +26,7 @@ from core.semantic_layer import (
 )
 from core.data_engine import load_tables, describe_schema
 from llm import build_system_prompt, ask_llm_for_code
-from core.context import get_recent_history
+from core.context import get_recent_history, get_last_known_profile
 from core.sandbox import run_generated_code
 from core.pii import mask_emails, mask_known_pii_names
 from core.guardrails import check_prohibited
@@ -111,6 +111,17 @@ def _safe_get_history(user_id: str | None, space_id: str | None) -> list[dict]:
         return []
 
 
+def _safe_get_last_profile(user_id: str | None, space_id: str | None) -> str | None:
+    """Igual que _safe_get_history pero para el perfil (técnico/negocio) del turno
+    anterior: si algo falla, se sigue sin pista de perfil previo (el LLM lo infiere
+    desde cero, asumiendo "negocio" por defecto) en vez de romper la respuesta."""
+    try:
+        return get_last_known_profile(user_id, space_id)
+    except Exception as e:
+        log.error("No se pudo recuperar el perfil de usuario previo: %s", e)
+        return None
+
+
 def answer_question(question: str, user_email: str | None = None, space_id: str | None = None, thread_id: str | None = None) -> str:
     """Ejecuta el mismo flujo que chatbot.py (CLI) pero devuelve el texto ya formateado,
     listo para meter en la respuesta JSON de Google Chat. Registra cada interacción
@@ -153,9 +164,22 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
     # es justo ese identificador pseudonimizado tal y como queda en el log.
     user_id = pseudonymize_user_email(user_email)
     history = _safe_get_history(user_id, space_id)
+    last_profile = _safe_get_last_profile(user_id, space_id)
+
+    # Pista de perfil: no se añade al `question` que se loguea/persiste (arriba),
+    # solo a la variante que ve el LLM, para no ensuciar interactions.jsonl con
+    # una nota interna. Si no hay perfil previo (conversación nueva o sin dato),
+    # el LLM lo infiere desde cero y asume "negocio" por defecto (ver prompt).
+    llm_question = question
+    if last_profile:
+        llm_question = (
+            f"{question}\n\n"
+            f"(Nota interna: perfil inferido en el turno anterior = \"{last_profile}\". "
+            f"Mantenlo si esta pregunta no aporta señal nueva, o ajústalo si sí la aporta.)"
+        )
 
     try:
-        decision = ask_llm_for_code(_system_prompt, question, history=history)
+        decision = ask_llm_for_code(_system_prompt, llm_question, history=history)
     except Exception as e:
         final_response = f"⚠️ Error consultando al modelo: {e}"
         _safe_log_interaction(
@@ -165,10 +189,16 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
             latency_ms=int((time.monotonic() - start) * 1000),
             model=model, semantic_layer_version=_semantic_layer_version,
             space_id=space_id, thread_id=thread_id,
+            user_profile=last_profile, profile_confidence=None,
         )
         return final_response
 
     llm_action = decision.get("action")
+    # Fallback a last_profile (y no directamente a "negocio") si el LLM omite el
+    # campo: así una conversación ya perfilada no "olvida" el perfil por un turno
+    # en el que la respuesta del modelo venga incompleta.
+    user_profile = decision.get("user_profile") or last_profile or "negocio"
+    profile_confidence = decision.get("profile_confidence", "baja")
 
     if llm_action == "ask_clarification":
         final_response = decision.get("clarification_question", "Necesito más detalle para responder.")
@@ -223,6 +253,7 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
         latency_ms=int((time.monotonic() - start) * 1000),
         model=model, semantic_layer_version=_semantic_layer_version,
         space_id=space_id, thread_id=thread_id,
+        user_profile=user_profile, profile_confidence=profile_confidence,
     )
     return final_response
 

@@ -57,15 +57,11 @@ def _parse_timestamp(value: str | None) -> datetime | None:
         return None
 
 
-def get_recent_history(user_id: str | None, space_id: str | None) -> list[dict]:
-    """Reconstruye el historial reciente de la conversación identificada por
-    (user_id, space_id), listo para insertarse en `messages` entre el
-    system_prompt y la pregunta actual.
-
-    Devuelve lista vacía (conversación nueva) si: falta user_id o space_id, el
-    fichero de log no existe/está vacío, no hay interacciones previas de esa
-    combinación, o la última interacción supera CONTEXT_INACTIVITY_MINUTES de
-    antigüedad. Nunca lanza excepción por fichero ausente o líneas corruptas."""
+def _get_recent_entries(user_id: str | None, space_id: str | None) -> list[dict]:
+    """Devuelve las entradas de log de la conversación (user_id, space_id), ordenadas
+    por timestamp ascendente, o lista vacía si no hay conversación activa (mismos
+    criterios que documenta get_recent_history). Compartida por get_recent_history
+    (mensajes para el LLM) y get_last_known_profile (perfil del turno anterior)."""
     if not user_id or not space_id or not LOG_FILE.exists():
         return []
 
@@ -94,6 +90,33 @@ def get_recent_history(user_id: str | None, space_id: str | None) -> list[dict]:
 
     now = datetime.now(timezone.utc)
     if now - last_ts > timedelta(minutes=config.CONTEXT_INACTIVITY_MINUTES):
+        return []
+
+    return entries
+
+
+def get_last_known_profile(user_id: str | None, space_id: str | None) -> str | None:
+    """Perfil ("tecnico"/"negocio") detectado en la última interacción de esta
+    conversación, o None si no hay conversación activa o esa interacción no llevaba
+    perfil registrado (p. ej. logs anteriores a este paso). Se usa como pista para
+    que el LLM no tenga que re-detectar el perfil desde cero en cada turno."""
+    entries = _get_recent_entries(user_id, space_id)
+    if not entries:
+        return None
+    return entries[-1].get("user_profile")
+
+
+def get_recent_history(user_id: str | None, space_id: str | None) -> list[dict]:
+    """Reconstruye el historial reciente de la conversación identificada por
+    (user_id, space_id), listo para insertarse en `messages` entre el
+    system_prompt y la pregunta actual.
+
+    Devuelve lista vacía (conversación nueva) si: falta user_id o space_id, el
+    fichero de log no existe/está vacío, no hay interacciones previas de esa
+    combinación, o la última interacción supera CONTEXT_INACTIVITY_MINUTES de
+    antigüedad. Nunca lanza excepción por fichero ausente o líneas corruptas."""
+    entries = _get_recent_entries(user_id, space_id)
+    if not entries:
         return []
 
     recent = entries[-config.CONTEXT_MAX_TURNS:]

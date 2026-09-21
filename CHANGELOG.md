@@ -4,6 +4,51 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Este proyecto es una PoC; las versiones se corresponden con los pasos del
 proyecto original, no con semver estricto.
 
+## [0.5.0] — Paso 6: perfilado adaptativo del usuario (técnico vs. negocio) — 2026-09-21
+
+### Contexto
+- Objetivo: ajustar cuántas preguntas aclaratorias hace el bot (y su estilo) según si
+  el usuario es técnico o de negocio, sin preguntárselo nunca de forma explícita y sin
+  gastar una llamada extra al LLM. Diseño acordado antes de implementar: el perfil se
+  infiere de la terminología de la pregunta (exacta de la capa semántica → técnico;
+  coloquial/vaga → negocio), se recalcula cada turno reutilizando la memoria
+  conversacional ya existente (Paso 2.2), y por defecto sin señal clara se asume
+  negocio. Cuando la señal es insuficiente, se aprovecha el bucle de aclaración que el
+  bot ya tiene en vez de añadir una pregunta dedicada a perfilar.
+
+### Añadido
+- `llm/base.py`: nueva regla 7 en el prompt de sistema y dos campos nuevos en el JSON
+  que el LLM ya devuelve para decidir `action` — `user_profile` (`"tecnico"` |
+  `"negocio"`) y `profile_confidence` (`"alta"` | `"media"` | `"baja"`) — inferidos en
+  la misma llamada, sin round-trip adicional. La regla también le dice al modelo cómo
+  adaptar el estilo de `clarification_question` y `explanation` a cada perfil: para
+  `tecnico`, breve y con nombres exactos de columnas/parámetros; para `negocio`, más
+  guiado, en lenguaje llano y con opciones concretas en vez de jerga.
+- `core/context.py`: refactor de `get_recent_history()` para extraer la lectura/filtrado
+  de entradas del log en `_get_recent_entries()`, reutilizada por la nueva
+  `get_last_known_profile(user_id, space_id)`, que devuelve el `user_profile` de la
+  última interacción de esa conversación (o `None` si no hay conversación activa o esa
+  entrada no llevaba perfil registrado).
+- `server.py`: `answer_question()` recupera `last_profile` vía la nueva
+  `_safe_get_last_profile()` (mismo patrón *best-effort* que `_safe_get_history`) y lo
+  añade como nota interna al final de la pregunta que ve el LLM — nunca a la pregunta
+  que se loguea ni a la que ve el usuario — para que el modelo mantenga el perfil si el
+  turno actual no aporta señal nueva. El perfil final a loguear cae de `decision`, con
+  fallback a `last_profile` y luego a `"negocio"` si el LLM omite el campo.
+- `observability/logger.py`: `log_interaction()` acepta y persiste `user_profile` y
+  `profile_confidence` en cada línea de `logs/interactions.jsonl` (`None` en el camino
+  bloqueado por el guardrail, que no llega a inferir nada).
+
+### Probado
+- Verificado en vivo contra el proveedor OpenCode con las tres preguntas de ejemplo del
+  diseño: "¿Cuál ha sido el ROAS de las campañas de Search (SEM) durante el primer
+  trimestre del año?" → `tecnico`/`alta`, respuesta directa con columnas/fórmula
+  exactas; "¿Cómo han ido las ventas este mes?" → `negocio`/`alta`, dispara el bucle de
+  aclaración con una pregunta guiada en lenguaje llano; "¿Cuánta pasta nos hemos
+  gastado en captación para el sector de Retail y Moda?" → `negocio`/`alta`, respuesta
+  directa en lenguaje llano. Los tres quedaron trazados con su perfil en
+  `logs/interactions.jsonl`. Suite completa de tests (29) sigue en verde.
+
 ## [0.4.0] — Paso 5: guardrail propio contra prompt injection y extracción masiva de PII — 2026-09-21
 
 ### Contexto

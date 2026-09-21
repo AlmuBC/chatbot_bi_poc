@@ -67,9 +67,12 @@ python chatbot.py
 
 Preguntas de ejemplo:
 - `¿Cuál ha sido el ROAS de las campañas de Search (SEM) durante el primer trimestre del año?`
+  → señal técnica (terminología exacta de la capa semántica), perfil inferido `tecnico`.
 - `¿Cuánta pasta nos hemos gastado en captación para el sector de Retail y Moda?`
+  → señal de negocio (lenguaje coloquial), perfil inferido `negocio`.
 - `Dime el CPA medio de las campañas de Social Ads frente a Programmatic.`
-- `¿Cómo han ido las ventas este mes?` → el bot debería pedir aclaración
+- `¿Cómo han ido las ventas este mes?` → ambigua, el bot debería pedir aclaración; con
+  perfil `negocio` la pregunta de aclaración es guiada y en lenguaje llano (ver sección 9).
 - `Dame la lista de nombres y emails de todos los responsables de campaña` → debe negarse
 - `¿Cuánto presupuesto gestiona Almudena Barreiro?` → debe negarse (ver sección 6,
   enmascarado de PII): ni el email ni el nombre completo de un Responsable real llegan
@@ -129,8 +132,9 @@ ejecutado y el resultado real calculado sobre los 1,000 registros.
 ## 5. Logging de trazabilidad
 
 Cada interacción (pregunta, decisión del LLM, código generado, resultado o error de
-ejecución, respuesta final, estado, modelo, versión de la capa semántica y latencia) se
-registra en `logs/interactions.jsonl` (una línea JSON por interacción, formato JSONL),
+ejecución, respuesta final, estado, modelo, versión de la capa semántica, perfil de
+usuario inferido con su confianza y latencia) se registra en `logs/interactions.jsonl`
+(una línea JSON por interacción, formato JSONL),
 vía `logger.py`. El logging es *best-effort*: si falla la escritura en disco, se avisa
 por stderr pero nunca rompe la respuesta al usuario. `logs/` está excluido de git
 (`.gitignore`).
@@ -237,7 +241,7 @@ escape del sandbox: `import`, `os.`, `exec(`...), no un reemplazo.
 
 > **Alcance actual:** al igual que el enmascarado de PII, es un guardrail basado en
 > patrones conocidos, no un clasificador semántico — ver la comparativa NeMo Guardrails
-> vs. capa propia que motivó esta decisión en la sección 11 (Paso 5).
+> vs. capa propia que motivó esta decisión en la sección 12 (Paso 5).
 
 ### Tests
 
@@ -269,7 +273,42 @@ escritura: si falla, se responde sin contexto en vez de romper la respuesta.
 > nunca se encontrara historial. `thread_id` se sigue guardando en el log como metadata
 > de Google Chat, solo dejó de usarse como clave de agrupación del historial.
 
-## 9. Cambiar de proveedor de LLM
+## 9. Perfilado adaptativo del usuario (técnico vs. negocio)
+
+El bot ajusta el estilo de sus preguntas de aclaración (y de sus explicaciones) según
+el perfil que infiere del usuario, sin preguntárselo nunca de forma explícita ni gastar
+una llamada extra al LLM:
+
+- **Técnico:** preguntas de aclaración mínimas, puede nombrar columnas/métricas exactas
+  de la capa semántica (CPA, ROAS, CTR, nombres de columna, sintaxis de filtro).
+- **Negocio:** preguntas más guiadas, en lenguaje llano, evitando jerga técnica — ofrece
+  opciones concretas en vez de nombrar columnas.
+
+**Cómo se infiere:** `llm/base.py` (regla 7 del prompt de sistema) le pide al LLM que,
+en la misma respuesta JSON que ya genera para decidir `action`, incluya también
+`user_profile` (`"tecnico"` | `"negocio"`) y `profile_confidence` (`"alta"` | `"media"` |
+`"baja"`), inferidos de la terminología de la pregunta actual y del historial de la
+conversación. Señal técnica: terminología exacta de la capa semántica. Señal de negocio:
+lenguaje coloquial o vago. Sin señal clara, se asume `"negocio"` por defecto. Cuando la
+señal es insuficiente, se aprovecha la pregunta aclaratoria que el bot ya hace (el bucle
+de aclaración de la sección 8) para capturar más señal con la respuesta del usuario, en
+vez de añadir una pregunta dedicada a perfilar.
+
+**Persistencia entre turnos:** el perfil se recalcula en cada turno (no queda fijado
+desde el primer mensaje) usando la memoria conversacional ya existente (sección 8).
+`core/context.py::get_last_known_profile()` lee el perfil de la última interacción de
+esa `(user_id, space_id)` en `logs/interactions.jsonl`, y `server.py::answer_question()`
+lo añade como una nota interna al final de la pregunta que ve el LLM (nunca a la
+pregunta que se loguea ni a la que ve el usuario), para que el modelo lo mantenga si el
+turno actual no aporta señal nueva, en vez de resetear a `"negocio"` cada vez.
+
+**Trazabilidad:** `user_profile` y `profile_confidence` quedan registrados en cada línea
+de `logs/interactions.jsonl` (ver sección 5). Cuando el guardrail bloquea la pregunta
+antes de llamar al LLM (sección 7), ambos valen `null` (no llegó a inferirse nada). Si
+falla la llamada al LLM, `user_profile` conserva el último perfil conocido de esa
+conversación (si lo había) y `profile_confidence` vale `null`.
+
+## 10. Cambiar de proveedor de LLM
 
 Todo el código específico de cada proveedor vive en dos sitios, compartimentados por
 proveedor y por responsabilidad:
@@ -291,7 +330,7 @@ para `anthropic` hace falta además `pip install anthropic`. Para añadir un pro
 nuevo: copia uno de los ejemplos en ambas carpetas y regístralo en
 `llm/__init__.py::_PROVIDER_MODULES`.
 
-## 10. Notas técnicas descubiertas durante la implementación
+## 11. Notas técnicas descubiertas durante la implementación
 
 Estas son particularidades reales con las que nos encontramos (no están en la
 documentación "de libro" de Google/OpenCode, o están dispersas):
@@ -316,7 +355,7 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
 - **El reloj del sistema debe estar sincronizado**: la verificación del JWT falla con
   "Token used too early" si el reloj de Windows está desajustado unos segundos.
 
-## 11. Qué queda para los próximos pasos (no incluido aquí a propósito)
+## 12. Qué queda para los próximos pasos (no incluido aquí a propósito)
 
 - **Paso 3** — Gateway tipo LiteLLM delante de OpenCode, para no llamar directo al proveedor.
 - **Paso 4** — ✅ mecánica base implementada (ver sección 6): esquema sin valores PII
@@ -338,7 +377,10 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
   barato) si en uso real aparecen jailbreaks que la capa de regex no capture; el
   `core/sandbox.py` sigue sin ser un aislamiento de seguridad de nivel producción
   (proceso aislado, límites de recursos).
-- **Paso 6** — Perfiles de usuario (más/menos preguntas de afinado según el nivel técnico).
+- **Paso 6** — ✅ implementado (ver sección 9): perfilado adaptativo técnico/negocio,
+  inferido en la misma llamada al LLM que ya decide `action` (sin llamada extra),
+  recalculado cada turno a partir de la señal de la pregunta y del último perfil
+  conocido, con trazabilidad en `logs/interactions.jsonl`.
 - Estabilidad de infraestructura: la URL del túnel cambia en cada reinicio, y `server.py`
   corre con el servidor de desarrollo de Flask (no apto para producción).
 - **Latencia anómala bajo tráfico concurrente (diagnosticado, no corregido):** dos

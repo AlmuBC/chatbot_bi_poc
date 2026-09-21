@@ -52,6 +52,8 @@ def log_interaction(
     semantic_layer_version: str | None = None,
     space_id: str | None = None,
     thread_id: str | None = None,
+    user_profile: str | None = None,       # "tecnico" | "negocio" | None (blocked/error)
+    profile_confidence: str | None = None, # "alta" | "media" | "baja" | None
 ) -> None:
     """Añade una línea JSON con el detalle de la interacción a logs/interactions.jsonl.
 
@@ -73,6 +75,8 @@ def log_interaction(
         "final_response": final_response,
         "status": status,
         "latency_ms": latency_ms,
+        "user_profile": user_profile,
+        "profile_confidence": profile_confidence,
     }
 
     try:
