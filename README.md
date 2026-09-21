@@ -72,12 +72,8 @@ Preguntas de ejemplo:
 - `¿Cómo han ido las ventas este mes?` → el bot debería pedir aclaración
 - `Dame la lista de nombres y emails de todos los responsables de campaña` → debe negarse
 
-Para probar solo la conexión con OpenCode (sin cargar nada de Google Chat), usa
-`test_opencode.py`. Para probar los endpoints del servidor sin pasar por Google Chat
-(health check y los distintos tipos de evento del webhook), usa `requests.http`. Para
-verificar el camino de error de la orquestación (sandbox fallando + mensaje genérico
-al usuario + log con el detalle real) sin depender de que el LLM genere código malo,
-usa `test_error_path.py`.
+Para probar los endpoints del servidor sin pasar por Google Chat (health check y los
+distintos tipos de evento del webhook), usa `requests.http`.
 
 ## 4. Ejecutar como Chat App de Google Chat
 
@@ -232,8 +228,6 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
 chatbot_bi_poc/
 ├── chatbot.py               # punto de entrada CLI (bucle de chat en terminal)
 ├── server.py                 # punto de entrada Google Chat (servidor webhook Flask)
-├── test_opencode.py           # prueba aislada de la conexión con el proveedor de LLM activo
-├── test_error_path.py         # prueba aislada del camino de error de la orquestación
 ├── requests.http              # peticiones de prueba para los endpoints del servidor
 ├── config/                    # configuración (por responsabilidad, no por archivo suelto)
 │   ├── settings.py             # variables generales (rutas, Google Chat, logging, contexto, LLM_PROVIDER)

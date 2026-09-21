@@ -4,6 +4,25 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Este proyecto es una PoC; las versiones se corresponden con los pasos del
 proyecto original, no con semver estricto.
 
+## [0.2.4] — Saneado del proyecto: eliminados scripts de diagnóstico y residuo de entorno — 2026-09-21
+
+### Eliminado
+- `test_opencode.py`: script de prueba manual de la conexión con el proveedor de LLM
+  activo. No formaba parte del flujo de ejecución del proyecto (ni CLI ni servidor lo
+  importaban).
+- `test_error_path.py`: script de prueba manual del camino de error de la
+  orquestación. Traía una nota pendiente ("no borrar hasta decidir si se deja como
+  test de regresión") desde el paso 2; se resuelve eliminándolo por no formar parte
+  del flujo de ejecución.
+- `get-pip.py`: instalador oficial de pip, residuo de la instalación del entorno, sin
+  relación con la lógica del chatbot.
+- `README.md` y `.gitignore` actualizados para quitar las referencias a estos tres
+  archivos.
+
+### Conservado (no son tests, son herramientas de diagnóstico documentadas)
+- `requests.http`: peticiones de prueba para los endpoints del servidor.
+- `relanzar-chatbot-bi.md`: runbook operativo para relanzar el servidor tras un parón.
+
 ## [0.2.3] — Fix: agrupación de la memoria de conversación por (user_id, space_id) — 2026-09-21
 
 ### Corregido
