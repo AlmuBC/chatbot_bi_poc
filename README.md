@@ -38,6 +38,9 @@ cp .env.example .env
 
 Rellena en `.env`:
 
+- **`LLM_PROVIDER`**: qué proveedor de LLM usar (`opencode` por defecto — es el único
+  probado en producción; `anthropic` y `openai` son plantillas de ejemplo, ver sección
+  "Cambiar de proveedor de LLM" más abajo).
 - **`OPENCODE_API_KEY`**: la obtienes en https://opencode.ai/auth
 - **`OPENCODE_BASE_URL`**: `https://opencode.ai/zen/go/v1` para la suscripción mensual
   Go, o `https://opencode.ai/zen/v1` para Zen (pago por saldo).
@@ -148,23 +151,52 @@ Cada pregunta se procesaba de forma aislada: el LLM no tenía memoria de turnos
 anteriores, así que si el bot pedía una aclaración ("¿te refieres a conversiones o a
 ingresos en euros?"), la respuesta del usuario ("en euros") le llegaba sin contexto.
 
-`context.py` reconstruye ese contexto a partir del propio `logs/interactions.jsonl`
-(no hay estado en memoria del proceso): dado un `thread_id`, busca sus últimas
-`CONTEXT_MAX_TURNS` interacciones y las convierte en pares de mensajes
-`{"role": "user", ...}` / `{"role": "assistant", ...}`, que `llm_client.ask_llm_for_code`
-inserta entre el `system_prompt` y la pregunta actual. Si la última interacción de ese
-thread supera `CONTEXT_INACTIVITY_MINUTES` de antigüedad, se trata como conversación
+`core/context.py` reconstruye ese contexto a partir del propio `logs/interactions.jsonl`
+(no hay estado en memoria del proceso): dada la pareja `(user_id, space_id)`, busca sus
+últimas `CONTEXT_MAX_TURNS` interacciones y las convierte en pares de mensajes
+`{"role": "user", ...}` / `{"role": "assistant", ...}`, que `llm.ask_llm_for_code`
+inserta entre el `system_prompt` y la pregunta actual. Si la última interacción de esa
+conversación supera `CONTEXT_INACTIVITY_MINUTES` de antigüedad, se trata como conversación
 nueva y no se incluye historial. La lectura del log es *best-effort* igual que la
 escritura: si falla, se responde sin contexto en vez de romper la respuesta.
 
-## 7. Notas técnicas descubiertas durante la implementación
+> **Por qué `(user_id, space_id)` y no `thread_id`:** en espacios de Google Chat sin
+> "threaded history" activado, cada mensaje entrante llega con un `thread_id` distinto
+> aunque sea la misma conversación seguida — comportamiento normal de la plataforma, no
+> un error de parseo. Agrupar por `thread_id` (como en una versión anterior) hacía que
+> nunca se encontrara historial. `thread_id` se sigue guardando en el log como metadata
+> de Google Chat, solo dejó de usarse como clave de agrupación del historial.
+
+## 7. Cambiar de proveedor de LLM
+
+Todo el código específico de cada proveedor vive en dos sitios, compartimentados por
+proveedor y por responsabilidad:
+
+- `config/providers/<proveedor>.py`: lee las variables de entorno del proveedor y
+  expone `validate()`, que comprueba que están todas (API key, modelo...) y, si falta
+  algo, lanza `RuntimeError` diciendo exactamente qué falta.
+- `llm/<proveedor>_client.py`: el "archivo de conexión" — construye el cliente del SDK
+  correspondiente y expone `ask_llm_for_code()` con la misma firma para todos.
+
+`llm/__init__.py` es el orquestador: lee `LLM_PROVIDER` de `.env`, carga el archivo de
+conexión correspondiente y llama a su `validate()` **antes** de cargar datos o levantar
+el servidor — si falta configuración, la ejecución se detiene ahí mismo con el error
+concreto, en vez de fallar más tarde a mitad de una conversación.
+
+Hoy solo `opencode` está probado en producción. `anthropic` y `openai` son plantillas
+de ejemplo listas para usar (cambia `LLM_PROVIDER` en `.env` y rellena sus variables);
+para `anthropic` hace falta además `pip install anthropic`. Para añadir un proveedor
+nuevo: copia uno de los ejemplos en ambas carpetas y regístralo en
+`llm/__init__.py::_PROVIDER_MODULES`.
+
+## 8. Notas técnicas descubiertas durante la implementación
 
 Estas son particularidades reales con las que nos encontramos (no están en la
 documentación "de libro" de Google/OpenCode, o están dispersas):
 
 - **OpenCode Go exige la cabecera `x-opencode-session`** en cada petición (desde el
   5 de septiembre de 2026), o responde 400 `MissingSessionID`. Ya está implementado en
-  `llm_client.py` con un UUID estable por proceso.
+  `llm/opencode_client.py` con un UUID estable por proceso.
 - **El formato de eventos de Google Chat no es el "clásico"** (`{"type": "MESSAGE", ...}`).
   Con "funciones interactivas" habilitadas, Google manda el formato de **complemento de
   Workspace**: el tipo de evento se deduce de qué clave hay dentro de `chat`
@@ -178,17 +210,17 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
   `service-<GOOGLE_CHAT_PROJECT_NUMBER>@gcp-sa-gsuiteaddons.iam.gserviceaccount.com`
   (no por `chat@system.gserviceaccount.com`, que es el emisor de las apps "clásicas"),
   y su `audience` es la URL completa del webhook, no el número de proyecto — de ahí las
-  dos variables `GOOGLE_CHAT_PROJECT_NUMBER` y `GOOGLE_CHAT_WEBHOOK_URL` en `config.py`.
+  dos variables `GOOGLE_CHAT_PROJECT_NUMBER` y `GOOGLE_CHAT_WEBHOOK_URL` en `config/settings.py`.
 - **El reloj del sistema debe estar sincronizado**: la verificación del JWT falla con
   "Token used too early" si el reloj de Windows está desajustado unos segundos.
 
-## 8. Qué queda para los próximos pasos (no incluido aquí a propósito)
+## 9. Qué queda para los próximos pasos (no incluido aquí a propósito)
 
 - **Paso 3** — Gateway tipo LiteLLM delante de OpenCode, para no llamar directo al proveedor.
 - **Paso 4** — Enmascarado automático de PII con una herramienta tipo Microsoft Presidio
   (hoy el control de PII es solo una regla en el prompt del LLM, no una detección robusta).
 - **Paso 5** — Guardarraíles reales contra prompt injection (NeMo Guardrails o similar).
-  El `sandbox.py` actual bloquea patrones obvios (`import`, `open(`, `os.`...) pero es
+  El `core/sandbox.py` actual bloquea patrones obvios (`import`, `open(`, `os.`...) pero es
   un filtro básico, no una defensa de producción.
 - **Paso 6** — Perfiles de usuario (más/menos preguntas de afinado según el nivel técnico).
 - Estabilidad de infraestructura: la URL del túnel cambia en cada reinicio, y `server.py`
@@ -198,20 +230,32 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
 
 ```
 chatbot_bi_poc/
-├── chatbot.py            # punto de entrada CLI (bucle de chat en terminal)
-├── server.py              # punto de entrada Google Chat (servidor webhook Flask)
-├── test_opencode.py        # prueba aislada de la conexión con OpenCode
-├── test_error_path.py      # prueba aislada del camino de error de la orquestación
-├── requests.http           # peticiones de prueba para los endpoints del servidor
-├── llm_client.py          # llamada al LLM vía OpenCode (genera código, no texto)
-├── context.py               # memoria de conversación de corto plazo (a partir del log)
-├── logger.py               # logging de trazabilidad en logs/interactions.jsonl
-├── semantic_layer.py       # carga y formatea semantic_layer.yaml
-├── data_engine.py          # carga el Excel a pandas
-├── sandbox.py              # ejecuta el código generado de forma acotada
-├── config.py               # variables de entorno
-├── data/                    # copia del Excel y el YAML de origen
-├── logs/                    # interactions.jsonl (generado en runtime, ignorado por git)
+├── chatbot.py               # punto de entrada CLI (bucle de chat en terminal)
+├── server.py                 # punto de entrada Google Chat (servidor webhook Flask)
+├── test_opencode.py           # prueba aislada de la conexión con el proveedor de LLM activo
+├── test_error_path.py         # prueba aislada del camino de error de la orquestación
+├── requests.http              # peticiones de prueba para los endpoints del servidor
+├── config/                    # configuración (por responsabilidad, no por archivo suelto)
+│   ├── settings.py             # variables generales (rutas, Google Chat, logging, contexto, LLM_PROVIDER)
+│   └── providers/               # un archivo de config por proveedor de LLM, cada uno con validate()
+│       ├── opencode.py           # activo por defecto
+│       ├── anthropic.py          # ejemplo
+│       └── openai.py             # ejemplo
+├── llm/                        # orquestador de proveedores de LLM + un "archivo de conexión" por proveedor
+│   ├── __init__.py              # decide qué proveedor usar (LLM_PROVIDER) y valida su config al arrancar
+│   ├── base.py                   # prompt de sistema y parseo de la respuesta, común a todos
+│   ├── opencode_client.py        # activo por defecto (genera código, no texto)
+│   ├── anthropic_client.py       # ejemplo
+│   └── openai_client.py          # ejemplo
+├── core/                       # lógica de negocio, independiente del proveedor de LLM
+│   ├── semantic_layer.py         # carga y formatea semantic_layer.yaml
+│   ├── data_engine.py             # carga el Excel a pandas
+│   ├── sandbox.py                 # ejecuta el código generado de forma acotada
+│   └── context.py                 # memoria de conversación de corto plazo (a partir del log)
+├── observability/
+│   └── logger.py                 # logging de trazabilidad en logs/interactions.jsonl
+├── data/                       # copia del Excel y el YAML de origen
+├── logs/                       # interactions.jsonl (generado en runtime, ignorado por git)
 ├── requirements.txt
 └── .env.example
 ```

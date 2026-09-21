@@ -13,7 +13,7 @@ que:
 No borrar hasta decidir si se deja como test de regresión.
 """
 import server  # importa y ejecuta la carga de datos/semantic layer real del proyecto
-from sandbox import run_generated_code  # función real de sandbox.py, misma firma que usa server.py
+from core.sandbox import run_generated_code  # función real de core/sandbox.py, misma firma que usa server.py
 
 BAD_CODE = "result = df['Columna_Que_No_Existe_XYZ'].sum()"
 

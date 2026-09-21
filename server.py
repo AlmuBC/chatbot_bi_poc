@@ -1,8 +1,9 @@
 """
 PoC - Paso 1 (versión Google Chat): servidor webhook que recibe los mensajes
 enviados a la Chat App "Chatbot BI" y responde usando el mismo motor que ya
-probamos en terminal (chatbot.py): capa semántica -> LLM (OpenCode) genera
-código pandas -> se ejecuta de verdad en sandbox -> se devuelve el resultado.
+probamos en terminal (chatbot.py): capa semántica -> LLM (proveedor configurado
+en LLM_PROVIDER, ver llm/) genera código pandas -> se ejecuta de verdad en
+sandbox -> se devuelve el resultado.
 
 Ejecución:
     python server.py
@@ -15,18 +16,19 @@ import traceback
 from flask import Flask, request, jsonify
 
 import config
-from semantic_layer import (
+import llm
+from core.semantic_layer import (
     load_semantic_layer,
     render_semantic_prompt,
     get_dataframe_variable_map,
     get_semantic_layer_version,
 )
-from data_engine import load_tables, describe_schema
-from llm_client import build_system_prompt, ask_llm_for_code
-from context import get_recent_history
-from sandbox import run_generated_code
+from core.data_engine import load_tables, describe_schema
+from llm import build_system_prompt, ask_llm_for_code
+from core.context import get_recent_history
+from core.sandbox import run_generated_code
 from chatbot import format_result_for_display  # reutilizamos el mismo formateador que en el CLI
-from logger import log_interaction
+from observability.logger import log_interaction, pseudonymize_user_email
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("chatbot_googlechat")
@@ -93,12 +95,12 @@ def _safe_log_interaction(**kwargs) -> None:
         log.error("No se pudo registrar la interacción en el log: %s", e)
 
 
-def _safe_get_history(thread_id: str | None) -> list[dict]:
+def _safe_get_history(user_id: str | None, space_id: str | None) -> list[dict]:
     """Igual que _safe_log_interaction pero para la lectura del historial: si algo
     falla leyendo/parseando logs/interactions.jsonl, la pregunta se responde sin
     contexto en vez de romper la respuesta al usuario."""
     try:
-        return get_recent_history(thread_id)
+        return get_recent_history(user_id, space_id)
     except Exception as e:
         log.error("No se pudo recuperar el historial de conversación: %s", e)
         return []
@@ -112,11 +114,14 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
     generated_code = None
     execution_result = None
     execution_error = None
-    # Se lee en el momento de la llamada (no se asume fijo globalmente), por si
-    # config.OPENCODE_MODEL cambia entre requests.
-    model = config.OPENCODE_MODEL
+    # Se lee en el momento de la llamada (no se asume fijo globalmente).
+    model = llm.MODEL_NAME
 
-    history = _safe_get_history(thread_id)
+    # Se pseudonimiza aquí (y no solo al loguear) porque el historial se agrupa
+    # por (user_id, space_id) -no por thread_id, ver core/context.py- y user_id
+    # es justo ese identificador pseudonimizado tal y como queda en el log.
+    user_id = pseudonymize_user_email(user_email)
+    history = _safe_get_history(user_id, space_id)
 
     try:
         decision = ask_llm_for_code(_system_prompt, question, history=history)

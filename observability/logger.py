@@ -12,11 +12,10 @@ import sys
 import threading
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 import config
 
-LOG_DIR = Path(__file__).resolve().parent / "logs"
+LOG_DIR = config.BASE_DIR / "logs"
 LOG_FILE = LOG_DIR / "interactions.jsonl"
 
 _lock = threading.Lock()

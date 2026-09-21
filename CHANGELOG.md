@@ -4,6 +4,29 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Este proyecto es una PoC; las versiones se corresponden con los pasos del
 proyecto original, no con semver estricto.
 
+## [0.2.3] — Fix: agrupación de la memoria de conversación por (user_id, space_id) — 2026-09-21
+
+### Corregido
+- **Bug confirmado con logs reales**: en espacios de Google Chat sin "threaded
+  history" activado, cada mensaje entrante llega con un `thread_id` (`message.thread.name`)
+  distinto aunque sea la misma conversación seguida (mismo `user_id` y `space_id`, tres
+  `thread_id` distintos en 77 segundos) — comportamiento normal de la plataforma en ese
+  tipo de espacio, no un error de parseo del payload. Como `get_recent_history()` agrupaba
+  por `thread_id`, nunca encontraba historial previo y la memoria de conversación de corto
+  plazo (0.2.2) no funcionaba en la práctica.
+- `context.py`: `get_recent_history()` ahora recibe `(user_id, space_id)` en vez de
+  `thread_id` y filtra el log por esa combinación. El resto de la lógica no cambia
+  (ventana de `CONTEXT_MAX_TURNS` turnos, expiración por `CONTEXT_INACTIVITY_MINUTES`).
+  `thread_id` se sigue guardando en el log como metadata de Google Chat, simplemente deja
+  de usarse como clave de agrupación del historial.
+- `server.py`: `answer_question()` pseudonimiza el email (`pseudonymize_user_email()`) antes
+  de leer el historial, ya que ahora `_safe_get_history()`/`get_recent_history()` necesitan
+  ese `user_id` (mismo valor que se termina guardando en el log) en vez de `thread_id`.
+
+### Caso límite confirmado
+- Un mismo usuario hablando en dos espacios distintos a la vez sigue tratándose como dos
+  conversaciones separadas (la clave incluye `space_id`, no solo `user_id`).
+
 ## [0.2.2] — Memoria de conversación de corto plazo — 2026-09-21
 
 ### Añadido

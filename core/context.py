@@ -1,15 +1,21 @@
 """
-Memoria de conversación de corto plazo: reconstruye el historial reciente de un
-thread_id a partir de logs/interactions.jsonl (sin tocar el formato ni el
-contenido de lo que logger.py ya escribe ahí), para poder incluirlo en el
-array `messages` que se envía al LLM y así resolver bucles de aclaración
-("¿ingresos o conversiones?" -> "en euros").
+Memoria de conversación de corto plazo: reconstruye el historial reciente de una
+conversación (user_id, space_id) a partir de logs/interactions.jsonl (sin tocar
+el formato ni el contenido de lo que logger.py ya escribe ahí), para poder
+incluirlo en el array `messages` que se envía al LLM y así resolver bucles de
+aclaración ("¿ingresos o conversiones?" -> "en euros").
+
+Se agrupa por (user_id, space_id) y no por thread_id: en espacios de Google Chat
+sin "threaded history" activado, cada mensaje entrante llega con un thread_id
+distinto aunque sea la misma conversación seguida (comportamiento normal de la
+plataforma, no un error de parseo), así que thread_id no sirve como clave de
+agrupación de contexto. Se sigue guardando en el log como metadata de Google Chat.
 """
 import json
 from datetime import datetime, timedelta, timezone
 
 import config
-from logger import LOG_FILE
+from observability.logger import LOG_FILE
 
 # Cuántas líneas finales del log se inspeccionan como máximo al buscar
 # interacciones de un thread_id. No es una solución de índices "de producción":
@@ -51,15 +57,16 @@ def _parse_timestamp(value: str | None) -> datetime | None:
         return None
 
 
-def get_recent_history(thread_id: str | None) -> list[dict]:
-    """Reconstruye el historial reciente de un thread_id, listo para insertarse
-    en `messages` entre el system_prompt y la pregunta actual.
+def get_recent_history(user_id: str | None, space_id: str | None) -> list[dict]:
+    """Reconstruye el historial reciente de la conversación identificada por
+    (user_id, space_id), listo para insertarse en `messages` entre el
+    system_prompt y la pregunta actual.
 
-    Devuelve lista vacía (conversación nueva) si: no hay thread_id, el fichero
-    de log no existe/está vacío, no hay interacciones previas de ese thread, o
-    la última interacción de ese thread supera CONTEXT_INACTIVITY_MINUTES de
+    Devuelve lista vacía (conversación nueva) si: falta user_id o space_id, el
+    fichero de log no existe/está vacío, no hay interacciones previas de esa
+    combinación, o la última interacción supera CONTEXT_INACTIVITY_MINUTES de
     antigüedad. Nunca lanza excepción por fichero ausente o líneas corruptas."""
-    if not thread_id or not LOG_FILE.exists():
+    if not user_id or not space_id or not LOG_FILE.exists():
         return []
 
     try:
@@ -73,7 +80,7 @@ def get_recent_history(thread_id: str | None) -> list[dict]:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if entry.get("thread_id") == thread_id:
+        if entry.get("user_id") == user_id and entry.get("space_id") == space_id:
             entries.append(entry)
 
     if not entries:

@@ -2,8 +2,9 @@
 PoC - Paso 1: Chatbot de consultas de negocio en terminal.
 
 Flujo por cada pregunta:
-  1. El LLM (vía OpenCode) traduce la pregunta a código pandas usando la capa semántica.
-  2. El código se ejecuta de verdad sobre los datos (sandbox.py) -> nunca se "inventa" un número.
+  1. El LLM (proveedor configurado en LLM_PROVIDER, ver llm/) traduce la pregunta a
+     código pandas usando la capa semántica.
+  2. El código se ejecuta de verdad sobre los datos (core/sandbox.py) -> nunca se "inventa" un número.
   3. Se muestra el código ejecutado (para poder verificar que la respuesta viene de código,
      no de lenguaje) y el resultado calculado.
 
@@ -14,10 +15,11 @@ import sys
 import pandas as pd
 
 import config
-from semantic_layer import load_semantic_layer, render_semantic_prompt, get_dataframe_variable_map
-from data_engine import load_tables, describe_schema
-from llm_client import build_system_prompt, ask_llm_for_code
-from sandbox import run_generated_code, UnsafeCodeError
+import llm
+from core.semantic_layer import load_semantic_layer, render_semantic_prompt, get_dataframe_variable_map
+from core.data_engine import load_tables, describe_schema
+from llm import build_system_prompt, ask_llm_for_code
+from core.sandbox import run_generated_code, UnsafeCodeError
 
 BANNER = """
 ==================================================================
@@ -39,7 +41,7 @@ def format_result_for_display(result) -> str:
 
 def main():
     print(BANNER)
-    print(f"Modelo LLM configurado: {config.OPENCODE_MODEL} (vía {config.OPENCODE_BASE_URL})")
+    print(f"Proveedor LLM: {llm.PROVIDER_NAME} — modelo: {llm.MODEL_NAME}")
 
     semantic = load_semantic_layer(config.SEMANTIC_LAYER_PATH)
     table_names = list(get_dataframe_variable_map(semantic).keys())

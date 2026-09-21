@@ -1,24 +1,12 @@
 """
-Cliente para OpenCode (Zen/Go), usando el SDK de OpenAI apuntando a su endpoint
-OpenAI-compatible. El LLM NUNCA calcula la métrica "de memoria": su único trabajo
-es traducir la pregunta coloquial en código pandas, usando la capa semántica como
-diccionario. El cálculo real lo hace pandas en sandbox.py.
+Piezas comunes a todos los proveedores de LLM: el prompt de sistema (con las
+reglas de negocio del chatbot) y el parseo de la respuesta a JSON. No depende
+de ningún proveedor concreto. El LLM NUNCA calcula la métrica "de memoria":
+su único trabajo es traducir la pregunta coloquial en código pandas, usando
+la capa semántica como diccionario. El cálculo real lo hace pandas en
+core/sandbox.py.
 """
 import json
-import uuid
-from openai import OpenAI
-import config
-
-_OPENCODE_SESSION_ID = str(uuid.uuid4())
-
-_client = OpenAI(
-    api_key=config.OPENCODE_API_KEY,
-    base_url=config.OPENCODE_BASE_URL,
-    default_headers={
-        "x-opencode-session": _OPENCODE_SESSION_ID,
-        "User-Agent": "chatbot-t2o-poc/0.1",
-    },
-)
 
 SYSTEM_PROMPT_TEMPLATE = """Eres el motor de traducción de un chatbot de analítica de marketing.
 Tu ÚNICA función es convertir la pregunta del usuario en código Python/pandas que calcule
@@ -62,30 +50,19 @@ def build_system_prompt(semantic_block: str, schema_block: str) -> str:
     return SYSTEM_PROMPT_TEMPLATE.format(semantic_block=semantic_block, schema_block=schema_block)
 
 
-def ask_llm_for_code(system_prompt: str, question: str, history: list[dict] | None = None) -> dict:
-    """`history` son turnos previos de la misma conversación (ver context.py),
-    ya en formato {"role": "user"|"assistant", "content": ...}, más recientes al
-    final. Se insertan entre el system_prompt y la pregunta actual."""
-    messages = [{"role": "system", "content": system_prompt}]
-    if history:
-        messages.extend(history)
-    messages.append({"role": "user", "content": question})
-
-    response = _client.chat.completions.create(
-        model=config.OPENCODE_MODEL,
-        messages=messages,
-        temperature=0,
-    )
-    raw = response.choices[0].message.content.strip()
-
-    # Algunos modelos envuelven el JSON en ```json ... ``` pese a las instrucciones; lo limpiamos.
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        if raw.startswith("json"):
-            raw = raw[4:]
-        raw = raw.strip()
+def parse_llm_json(raw: str) -> dict:
+    """Limpia el posible envoltorio ```json ... ``` (algunos modelos lo añaden
+    pese a las instrucciones) y parsea el JSON de la respuesta del modelo.
+    Lanza ValueError con la respuesta cruda si no es JSON válido, para poder
+    depurar qué devolvió el modelo."""
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
 
     try:
-        return json.loads(raw)
+        return json.loads(cleaned)
     except json.JSONDecodeError as e:
         raise ValueError(f"El modelo no devolvió un JSON válido. Respuesta cruda:\n{raw}") from e
