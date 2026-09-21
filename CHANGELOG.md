@@ -4,6 +4,39 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Este proyecto es una PoC; las versiones se corresponden con los pasos del
 proyecto original, no con semver estricto.
 
+## [0.6.0] — Documentación definitiva de la PoC — 2026-09-21
+
+### Contexto
+- El README había crecido con cada paso hasta concentrar toda la documentación
+  (instalación, PII, guardrails, memoria, perfilado, proveedores, notas técnicas,
+  roadmap) en un solo archivo de 400+ líneas. Además, las instrucciones para
+  relanzar el proyecto tras un parón vivían aparte, en `relanzar-chatbot-bi.md`,
+  un archivo provisional fuera de la estructura del repo.
+
+### Añadido
+- `docs/`: documentación reorganizada por tema, cada archivo autocontenido y
+  enlazado entre sí — `instalacion-y-puesta-en-marcha.md` (incluye cómo crear la
+  cuenta de servicio de Google Cloud), `despliegue-y-relanzamiento.md` (absorbe
+  el contenido íntegro de `relanzar-chatbot-bi.md`), `logging-y-trazabilidad.md`,
+  `pii-y-guardrails.md`, `memoria-y-perfilado.md`, `proveedores-llm.md` y
+  `notas-tecnicas-y-roadmap.md`.
+
+### Cambiado
+- `README.md`: reescrito como punto de entrada — qué es el proyecto, arranque
+  rápido en terminal, tabla de enlaces a `docs/` y estructura del proyecto
+  actualizada (incluye `docs/` y `secrets/`).
+
+### Eliminado
+- `relanzar-chatbot-bi.md` (provisional, fuera de la estructura del repo) — su
+  contenido pasó íntegro a `docs/despliegue-y-relanzamiento.md`.
+
+### Seguridad
+- `.env.example`: `GOOGLE_CHAT_PROJECT_NUMBER` llevaba el número de proyecto real
+  de Google Cloud como valor de ejemplo en vez de un placeholder — corregido.
+- `docs/instalacion-y-puesta-en-marcha.md` y `docs/despliegue-y-relanzamiento.md`:
+  los enlaces directos a Cloud Console llevaban el project ID real de Google
+  Cloud incrustado — sustituido por un placeholder (`tu-proyecto-id`).
+
 ## [0.5.0] — Paso 6: perfilado adaptativo del usuario (técnico vs. negocio) — 2026-09-21
 
 ### Contexto
