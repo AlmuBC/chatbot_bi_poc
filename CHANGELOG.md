@@ -4,6 +4,57 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/).
 Este proyecto es una PoC; las versiones se corresponden con los pasos del
 proyecto original, no con semver estricto.
 
+## [0.2.2] — Memoria de conversación de corto plazo — 2026-09-21
+
+### Añadido
+- `context.py` (nuevo): `get_recent_history(thread_id)` reconstruye el historial
+  reciente de una conversación a partir de `logs/interactions.jsonl` (sin estado en
+  memoria del proceso ni cambios en el formato del log). Lee solo la cola del fichero
+  (últimas ~500 líneas, en bloques desde el final) en vez de todo desde el principio,
+  filtra por `thread_id`, y devuelve las últimas `CONTEXT_MAX_TURNS` interacciones como
+  pares de mensajes `user`/`assistant` — usando `final_response` para el turno del
+  asistente en todos los estados (incluida la `clarification_question`, que ya queda
+  copiada ahí por `server.py`). Si la última interacción del thread supera
+  `CONTEXT_INACTIVITY_MINUTES` de antigüedad, devuelve historial vacío (conversación
+  nueva). Nunca lanza excepción por fichero ausente, vacío o con líneas corruptas.
+- `config.py`, `.env`, `.env.example`: nuevas variables `CONTEXT_MAX_TURNS` (por
+  defecto `3`) y `CONTEXT_INACTIVITY_MINUTES` (por defecto `20`).
+- `llm_client.py`: `ask_llm_for_code()` acepta ahora un parámetro `history` opcional y
+  construye `messages` como `[system_prompt] + history + [pregunta actual]` en vez de
+  solo `[system_prompt] + [pregunta actual]`.
+- `server.py`: `answer_question()` recupera el historial vía `_safe_get_history()`
+  (mismo patrón *best-effort* que `_safe_log_interaction`) antes de llamar al LLM.
+
+### Contexto
+- Hasta ahora cada pregunta se procesaba de forma aislada: si el bot pedía una
+  aclaración ("¿conversiones o ingresos en euros?"), la respuesta del usuario ("en
+  euros") le llegaba al LLM sin ningún contexto de la pregunta original.
+- Este cambio no toca el formato ni el contenido de lo que ya se escribía en
+  `logs/interactions.jsonl` — reutiliza el log existente como única fuente del
+  historial, sin añadir un almacén de conversación aparte.
+
+## [0.2.1] — Pseudonimización de PII y versionado de la capa semántica en logs — 2026-09-21
+
+### Añadido
+- `logger.py`: `pseudonymize_user_email()` deriva un `user_id` determinista y no
+  reversible (HMAC-SHA256 con la nueva clave `LOG_USER_ID_SECRET`) a partir del email
+  del usuario. `log_interaction()` ya no escribe el email en claro en
+  `logs/interactions.jsonl`, solo este `user_id`.
+- `logger.py` / `server.py`: cada entrada del log incluye ahora también `model` (el
+  modelo de OpenCode usado en esa llamada, leído en el momento de la petición) y
+  `semantic_layer_version`, para poder trazar con qué definición de métricas se generó
+  cada respuesta.
+- `data/semantic_layer.yaml`: nueva clave raíz `version: "1.0.0"`.
+- `semantic_layer.py`: `get_semantic_layer_version()` para leer esa versión.
+- `config.py`, `.env.example`: nueva variable obligatoria `LOG_USER_ID_SECRET` (el
+  servidor no arranca sin ella, igual que ya ocurría con `OPENCODE_API_KEY`).
+
+### Cambiado
+- **Formato de `logs/interactions.jsonl`**: el campo `user_email` se sustituye por
+  `user_id` (pseudonimizado), y se añaden los campos `model` y
+  `semantic_layer_version`. No es retrocompatible con líneas ya escritas por la
+  versión anterior del logger.
+
 ## [0.2.0] — Paso 2: Logging de trazabilidad — 2026-09-19
 
 ### Añadido

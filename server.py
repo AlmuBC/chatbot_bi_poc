@@ -15,9 +15,15 @@ import traceback
 from flask import Flask, request, jsonify
 
 import config
-from semantic_layer import load_semantic_layer, render_semantic_prompt, get_dataframe_variable_map
+from semantic_layer import (
+    load_semantic_layer,
+    render_semantic_prompt,
+    get_dataframe_variable_map,
+    get_semantic_layer_version,
+)
 from data_engine import load_tables, describe_schema
 from llm_client import build_system_prompt, ask_llm_for_code
+from context import get_recent_history
 from sandbox import run_generated_code
 from chatbot import format_result_for_display  # reutilizamos el mismo formateador que en el CLI
 from logger import log_interaction
@@ -33,6 +39,7 @@ _table_names = list(get_dataframe_variable_map(_semantic).keys())
 _dataframes = load_tables(config.EXCEL_PATH, _table_names)
 _schema_block = describe_schema(next(iter(_dataframes.values())))
 _semantic_block = render_semantic_prompt(_semantic)
+_semantic_layer_version = get_semantic_layer_version(_semantic)
 _system_prompt = build_system_prompt(_semantic_block, _schema_block)
 
 log.info("Datos cargados: %d filas, tabla(s): %s", len(next(iter(_dataframes.values()))), _table_names)
@@ -86,6 +93,17 @@ def _safe_log_interaction(**kwargs) -> None:
         log.error("No se pudo registrar la interacción en el log: %s", e)
 
 
+def _safe_get_history(thread_id: str | None) -> list[dict]:
+    """Igual que _safe_log_interaction pero para la lectura del historial: si algo
+    falla leyendo/parseando logs/interactions.jsonl, la pregunta se responde sin
+    contexto en vez de romper la respuesta al usuario."""
+    try:
+        return get_recent_history(thread_id)
+    except Exception as e:
+        log.error("No se pudo recuperar el historial de conversación: %s", e)
+        return []
+
+
 def answer_question(question: str, user_email: str | None = None, space_id: str | None = None, thread_id: str | None = None) -> str:
     """Ejecuta el mismo flujo que chatbot.py (CLI) pero devuelve el texto ya formateado,
     listo para meter en la respuesta JSON de Google Chat. Registra cada interacción
@@ -94,9 +112,14 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
     generated_code = None
     execution_result = None
     execution_error = None
+    # Se lee en el momento de la llamada (no se asume fijo globalmente), por si
+    # config.OPENCODE_MODEL cambia entre requests.
+    model = config.OPENCODE_MODEL
+
+    history = _safe_get_history(thread_id)
 
     try:
-        decision = ask_llm_for_code(_system_prompt, question)
+        decision = ask_llm_for_code(_system_prompt, question, history=history)
     except Exception as e:
         final_response = f"⚠️ Error consultando al modelo: {e}"
         _safe_log_interaction(
@@ -104,6 +127,7 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
             generated_code=None, execution_result=None, execution_error=str(e),
             final_response=final_response, status="error",
             latency_ms=int((time.monotonic() - start) * 1000),
+            model=model, semantic_layer_version=_semantic_layer_version,
             space_id=space_id, thread_id=thread_id,
         )
         return final_response
@@ -148,6 +172,7 @@ def answer_question(question: str, user_email: str | None = None, space_id: str 
         generated_code=generated_code, execution_result=execution_result,
         execution_error=execution_error, final_response=final_response, status=status,
         latency_ms=int((time.monotonic() - start) * 1000),
+        model=model, semantic_layer_version=_semantic_layer_version,
         space_id=space_id, thread_id=thread_id,
     )
     return final_response

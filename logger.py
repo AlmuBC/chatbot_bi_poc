@@ -5,6 +5,8 @@ Logging de trazabilidad de cada interacción del chatbot, en JSON Lines
 Es deliberadamente "best-effort": una interacción real con el usuario nunca debe
 fallar porque el logging falle (permisos de disco, disco lleno, etc.).
 """
+import hashlib
+import hmac
 import json
 import sys
 import threading
@@ -12,10 +14,29 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import config
+
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_FILE = LOG_DIR / "interactions.jsonl"
 
 _lock = threading.Lock()
+
+
+def pseudonymize_user_email(user_email: str | None) -> str | None:
+    """Deriva un identificador determinista y no reversible a partir del email, usando
+    HMAC-SHA256 con un secreto (config.LOG_USER_ID_SECRET) que nunca se guarda en el log.
+
+    Determinista: el mismo email siempre produce el mismo identificador, así que se
+    pueden agrupar las interacciones de un mismo usuario. No identificable: sin el
+    secreto no se puede recuperar ni verificar el email original a partir del log."""
+    if not user_email:
+        return None
+    digest = hmac.new(
+        config.LOG_USER_ID_SECRET.encode("utf-8"),
+        user_email.strip().lower().encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"u_{digest[:16]}"
 
 
 def log_interaction(
@@ -28,6 +49,8 @@ def log_interaction(
     final_response: str,
     status: str,              # "success" | "error" | "clarification" | "refused"
     latency_ms: int,
+    model: str | None = None,
+    semantic_layer_version: str | None = None,
     space_id: str | None = None,
     thread_id: str | None = None,
 ) -> None:
@@ -38,11 +61,13 @@ def log_interaction(
     entry = {
         "interaction_id": str(uuid.uuid4()),
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "user_email": user_email,
+        "user_id": pseudonymize_user_email(user_email),
         "space_id": space_id,
         "thread_id": thread_id,
         "question": question,
         "llm_action": llm_action,
+        "model": model,
+        "semantic_layer_version": semantic_layer_version,
         "generated_code": generated_code,
         "execution_result": execution_result,
         "execution_error": execution_error,

@@ -62,13 +62,18 @@ def build_system_prompt(semantic_block: str, schema_block: str) -> str:
     return SYSTEM_PROMPT_TEMPLATE.format(semantic_block=semantic_block, schema_block=schema_block)
 
 
-def ask_llm_for_code(system_prompt: str, question: str) -> dict:
+def ask_llm_for_code(system_prompt: str, question: str, history: list[dict] | None = None) -> dict:
+    """`history` son turnos previos de la misma conversación (ver context.py),
+    ya en formato {"role": "user"|"assistant", "content": ...}, más recientes al
+    final. Se insertan entre el system_prompt y la pregunta actual."""
+    messages = [{"role": "system", "content": system_prompt}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": question})
+
     response = _client.chat.completions.create(
         model=config.OPENCODE_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question},
-        ],
+        messages=messages,
         temperature=0,
     )
     raw = response.choices[0].message.content.strip()

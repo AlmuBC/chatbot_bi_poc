@@ -49,6 +49,12 @@ Rellena en `.env`:
   `/googlechat` al final, tal cual está puesta en "URL del extremo HTTP" en esa misma
   pestaña. **Debe coincidir carácter por carácter** — Google firma el token con esa URL
   exacta como "audience". Hay que actualizarla cada vez que cambie la URL del túnel.
+- **`LOG_USER_ID_SECRET`**: clave secreta usada para pseudonimizar (HMAC-SHA256) el
+  email del usuario antes de guardarlo en `logs/interactions.jsonl`. Genera la tuya con
+  `python -c "import secrets; print(secrets.token_hex(32))"`.
+- **`CONTEXT_MAX_TURNS`** / **`CONTEXT_INACTIVITY_MINUTES`**: controlan la memoria de
+  conversación de corto plazo (ver sección 6). Valores por defecto: `3` turnos previos,
+  `20` minutos de inactividad.
 
 ## 3. Ejecutar en terminal (para probar el motor sin depender de Google Chat)
 
@@ -121,16 +127,37 @@ ejecutado y el resultado real calculado sobre los 1,000 registros.
 ## 5. Logging de trazabilidad
 
 Cada interacción (pregunta, decisión del LLM, código generado, resultado o error de
-ejecución, respuesta final, estado y latencia) se registra en `logs/interactions.jsonl`
-(una línea JSON por interacción, formato JSONL), vía `logger.py`. El logging es
-*best-effort*: si falla la escritura en disco, se avisa por stderr pero nunca rompe la
-respuesta al usuario. `logs/` está excluido de git (`.gitignore`).
+ejecución, respuesta final, estado, modelo, versión de la capa semántica y latencia) se
+registra en `logs/interactions.jsonl` (una línea JSON por interacción, formato JSONL),
+vía `logger.py`. El logging es *best-effort*: si falla la escritura en disco, se avisa
+por stderr pero nunca rompe la respuesta al usuario. `logs/` está excluido de git
+(`.gitignore`).
+
+El email del usuario **nunca se guarda en claro**: se pseudonimiza con HMAC-SHA256
+(`logger.pseudonymize_user_email`, clave `LOG_USER_ID_SECRET`) antes de escribirse como
+`user_id`. Es determinista (el mismo email siempre da el mismo `user_id`, así se pueden
+agrupar interacciones de un mismo usuario) pero no reversible sin el secreto.
 
 Si el código generado falla en el sandbox, el usuario recibe siempre un mensaje
 genérico ("No he podido calcular la respuesta a tu pregunta...") — el traceback real
 solo queda en `execution_error` dentro del log, nunca se expone en el chat.
 
-## 6. Notas técnicas descubiertas durante la implementación
+## 6. Memoria de conversación de corto plazo
+
+Cada pregunta se procesaba de forma aislada: el LLM no tenía memoria de turnos
+anteriores, así que si el bot pedía una aclaración ("¿te refieres a conversiones o a
+ingresos en euros?"), la respuesta del usuario ("en euros") le llegaba sin contexto.
+
+`context.py` reconstruye ese contexto a partir del propio `logs/interactions.jsonl`
+(no hay estado en memoria del proceso): dado un `thread_id`, busca sus últimas
+`CONTEXT_MAX_TURNS` interacciones y las convierte en pares de mensajes
+`{"role": "user", ...}` / `{"role": "assistant", ...}`, que `llm_client.ask_llm_for_code`
+inserta entre el `system_prompt` y la pregunta actual. Si la última interacción de ese
+thread supera `CONTEXT_INACTIVITY_MINUTES` de antigüedad, se trata como conversación
+nueva y no se incluye historial. La lectura del log es *best-effort* igual que la
+escritura: si falla, se responde sin contexto en vez de romper la respuesta.
+
+## 7. Notas técnicas descubiertas durante la implementación
 
 Estas son particularidades reales con las que nos encontramos (no están en la
 documentación "de libro" de Google/OpenCode, o están dispersas):
@@ -155,7 +182,7 @@ documentación "de libro" de Google/OpenCode, o están dispersas):
 - **El reloj del sistema debe estar sincronizado**: la verificación del JWT falla con
   "Token used too early" si el reloj de Windows está desajustado unos segundos.
 
-## 7. Qué queda para los próximos pasos (no incluido aquí a propósito)
+## 8. Qué queda para los próximos pasos (no incluido aquí a propósito)
 
 - **Paso 3** — Gateway tipo LiteLLM delante de OpenCode, para no llamar directo al proveedor.
 - **Paso 4** — Enmascarado automático de PII con una herramienta tipo Microsoft Presidio
@@ -177,6 +204,7 @@ chatbot_bi_poc/
 ├── test_error_path.py      # prueba aislada del camino de error de la orquestación
 ├── requests.http           # peticiones de prueba para los endpoints del servidor
 ├── llm_client.py          # llamada al LLM vía OpenCode (genera código, no texto)
+├── context.py               # memoria de conversación de corto plazo (a partir del log)
 ├── logger.py               # logging de trazabilidad en logs/interactions.jsonl
 ├── semantic_layer.py       # carga y formatea semantic_layer.yaml
 ├── data_engine.py          # carga el Excel a pandas

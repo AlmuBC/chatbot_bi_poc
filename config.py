@@ -22,8 +22,26 @@ GOOGLE_CHAT_WEBHOOK_URL = os.getenv("GOOGLE_CHAT_WEBHOOK_URL")
 GOOGLE_CHAT_VERIFY_REQUESTS = os.getenv("GOOGLE_CHAT_VERIFY_REQUESTS", "true").lower() == "true"
 PORT = int(os.getenv("PORT", "8080"))
 
+# Secreto usado para pseudonimizar user_email en logs/interactions.jsonl (HMAC-SHA256,
+# ver logger.py). Debe mantenerse fuera del código y no compartirse con el log.
+LOG_USER_ID_SECRET = os.getenv("LOG_USER_ID_SECRET", "")
+
+# Memoria de conversación de corto plazo (ver context.py): cuántos turnos previos
+# del mismo thread_id se incluyen como historial en la llamada al LLM, y a partir
+# de cuántos minutos de inactividad se considera que la conversación "empieza de
+# cero" (no se incluye historial).
+CONTEXT_MAX_TURNS = int(os.getenv("CONTEXT_MAX_TURNS", "3"))
+CONTEXT_INACTIVITY_MINUTES = int(os.getenv("CONTEXT_INACTIVITY_MINUTES", "20"))
+
 if not OPENCODE_API_KEY:
     raise RuntimeError(
         "Falta OPENCODE_API_KEY. Copia .env.example a .env y añade tu API key "
         "(la obtienes en https://opencode.ai/auth)."
+    )
+
+if not LOG_USER_ID_SECRET:
+    raise RuntimeError(
+        "Falta LOG_USER_ID_SECRET. Añade a tu .env una clave secreta aleatoria "
+        "(ej. genera una con `python -c \"import secrets; print(secrets.token_hex(32))\"`); "
+        "se usa para pseudonimizar el email del usuario en logs/interactions.jsonl."
     )

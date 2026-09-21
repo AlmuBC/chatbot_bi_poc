@@ -30,6 +30,12 @@ def get_dataframe_variable_map(semantic: dict) -> dict[str, str]:
     return {table["name"]: "df" for table in semantic.get("tables", [])}
 
 
+def get_semantic_layer_version(semantic: dict) -> str:
+    """Versión de la capa semántica (clave `version` en la raíz del YAML), para poder
+    trazar en los logs con qué definición de métricas se generó cada respuesta."""
+    return str(semantic.get("version", "unknown"))
+
+
 def render_semantic_prompt(semantic: dict) -> str:
     """Convierte la capa semántica en texto legible para el system prompt del LLM."""
     lines = []

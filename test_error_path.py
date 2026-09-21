@@ -18,7 +18,7 @@ from sandbox import run_generated_code  # función real de sandbox.py, misma fir
 BAD_CODE = "result = df['Columna_Que_No_Existe_XYZ'].sum()"
 
 
-def _fake_ask_llm_for_code(system_prompt, question):
+def _fake_ask_llm_for_code(system_prompt, question, history=None):
     """Sustituye la llamada real al LLM: fuerza execute_code con código que falla."""
     return {
         "action": "execute_code",
