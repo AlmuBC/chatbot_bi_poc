@@ -1,5 +1,5 @@
 ### Variables
-@baseUrl = https://c0gl2kb2-8080.uks1.devtunnels.ms
+@baseUrl = {{$dotenv TUNNEL_BASE_URL}}
 @localUrl = http://localhost:8080
 
 ### Health check (GET /)
